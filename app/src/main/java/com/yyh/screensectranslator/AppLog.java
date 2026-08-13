@@ -27,7 +27,7 @@ final class AppLog {
 
     static void appStarted(Context context) {
         info(context, "APP", "START",
-                "version=2.0.1 sdk=" + Build.VERSION.SDK_INT
+                "version=" + BuildConfig.VERSION_NAME + " sdk=" + Build.VERSION.SDK_INT
                         + " device=" + clean(Build.MANUFACTURER + " " + Build.MODEL)
                         + " build=" + clean(Build.DISPLAY));
     }
