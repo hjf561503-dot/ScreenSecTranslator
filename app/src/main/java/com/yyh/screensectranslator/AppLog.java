@@ -27,9 +27,19 @@ final class AppLog {
 
     static void appStarted(Context context) {
         info(context, "APP", "START",
-                "version=" + BuildConfig.VERSION_NAME + " sdk=" + Build.VERSION.SDK_INT
+                "version=" + appVersion(context) + " sdk=" + Build.VERSION.SDK_INT
                         + " device=" + clean(Build.MANUFACTURER + " " + Build.MODEL)
                         + " build=" + clean(Build.DISPLAY));
+    }
+
+    private static String appVersion(Context context) {
+        try {
+            String version = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0).versionName;
+            return version == null || version.trim().isEmpty() ? "unknown" : clean(version);
+        } catch (Exception ignored) {
+            return "unknown";
+        }
     }
 
     static void info(Context context, String component, String event, String detail) {
