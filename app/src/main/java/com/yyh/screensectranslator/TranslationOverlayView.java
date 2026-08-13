@@ -139,13 +139,13 @@ final class TranslationOverlayView extends View {
     }
 
     private static RectF expandedByTenPercent(RectF original, int width, int height) {
-        float extraX = original.width() * (MASK_SCALE - 1f) / 2f;
-        float extraY = original.height() * (MASK_SCALE - 1f) / 2f;
-        return new RectF(
-                clamp(original.left - extraX, 0f, width),
-                clamp(original.top - extraY, 0f, height),
-                clamp(original.right + extraX, 0f, width),
-                clamp(original.bottom + extraY, 0f, height));
+        float targetWidth = Math.min(width, original.width() * MASK_SCALE);
+        float targetHeight = Math.min(height, original.height() * MASK_SCALE);
+        float left = original.centerX() - targetWidth / 2f;
+        float top = original.centerY() - targetHeight / 2f;
+        left = clamp(left, 0f, Math.max(0f, width - targetWidth));
+        top = clamp(top, 0f, Math.max(0f, height - targetHeight));
+        return new RectF(left, top, left + targetWidth, top + targetHeight);
     }
 
     private static Rect bitmapRect(RectF viewRect, int viewWidth, int viewHeight, Bitmap bitmap) {

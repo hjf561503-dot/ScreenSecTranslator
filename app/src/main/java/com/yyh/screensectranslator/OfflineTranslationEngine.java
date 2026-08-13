@@ -13,7 +13,7 @@ import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -52,11 +52,13 @@ final class OfflineTranslationEngine implements AutoCloseable {
     }
 
     private static final int LINES_PER_PASS = 12;
-    private static final int MAX_OCR_LONG_EDGE = 1800;
+    // Keep the Samsung Tab S9+ native 2800 px screenshot intact. Scaling it to
+    // 1800 px made small dashboard labels fall below ML Kit's useful character size.
+    private static final int MAX_OCR_LONG_EDGE = 3200;
     private static final int MAX_CACHE_ENTRIES = 800;
     private final Context context;
     private final TextRecognizer recognizer = TextRecognition.getClient(
-            TextRecognizerOptions.DEFAULT_OPTIONS);
+            new ChineseTextRecognizerOptions.Builder().build());
     private final Translator translator;
     private static final Map<String, String> SHARED_CACHE = Collections.synchronizedMap(
             new LinkedHashMap<String, String>(MAX_CACHE_ENTRIES, 0.75f, true) {
@@ -183,17 +185,33 @@ final class OfflineTranslationEngine implements AutoCloseable {
         for (Text.Element element : line.getElements()) {
             String text = clean(element.getText());
             Rect box = element.getBoundingBox();
-            if (text.isEmpty() || box == null || CyberGlossary.containsHan(text)) {
+            if (text.isEmpty() || box == null) {
                 flushRun(run, candidates);
                 continue;
             }
-            if (CyberGlossary.containsEnglish(text)) {
-                run.append(text, box);
-            } else {
-                run.append(text, box);
+            if (CyberGlossary.containsHan(text)) {
+                flushRun(run, candidates);
+                addEnglishSymbolsFromMixedElement(element, candidates);
+                continue;
             }
+            run.append(text, box);
         }
         flushRun(run, candidates);
+    }
+
+    private static void addEnglishSymbolsFromMixedElement(
+            Text.Element element, List<Candidate> candidates) {
+        RunBuilder symbols = new RunBuilder();
+        for (Text.Symbol symbol : element.getSymbols()) {
+            String value = clean(symbol.getText());
+            Rect box = symbol.getBoundingBox();
+            if (value.isEmpty() || box == null || CyberGlossary.containsHan(value)) {
+                flushRun(symbols, candidates);
+                continue;
+            }
+            symbols.appendContiguous(value, box);
+        }
+        flushRun(symbols, candidates);
     }
 
     private static void flushRun(RunBuilder run, List<Candidate> candidates) {
@@ -371,8 +389,17 @@ final class OfflineTranslationEngine implements AutoCloseable {
         private Rect bounds;
 
         void append(String value, Rect box) {
+            append(value, box, true);
+        }
+
+        void appendContiguous(String value, Rect box) {
+            append(value, box, false);
+        }
+
+        private void append(String value, Rect box, boolean inferWordSpace) {
             if (value == null || value.isEmpty()) return;
-            if (text.length() > 0 && needsSpace(text.charAt(text.length() - 1), value.charAt(0))) {
+            if (inferWordSpace && text.length() > 0
+                    && needsSpace(text.charAt(text.length() - 1), value.charAt(0))) {
                 text.append(' ');
             }
             text.append(value);

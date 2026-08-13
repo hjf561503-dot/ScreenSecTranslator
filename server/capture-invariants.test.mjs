@@ -121,8 +121,14 @@ test("one local tap completes all page batches without another screenshot", asyn
 test("quality gate rejects Chinese input, internal markers, and untranslated English", async () => {
   const engine = await readFile(engineSourceUrl, "utf8");
   const glossary = await readFile(glossarySourceUrl, "utf8");
+  const build = await readFile(new URL("../app/build.gradle", import.meta.url), "utf8");
   assert.match(engine, /line\.getElements\(\)/);
   assert.match(engine, /CyberGlossary\.containsHan\(text\)/);
+  assert.match(engine, /ChineseTextRecognizerOptions/);
+  assert.match(engine, /element\.getSymbols\(\)/);
+  assert.match(engine, /appendContiguous/);
+  assert.match(build, /text-recognition-chinese:16\.0\.1/);
+  assert.doesNotMatch(build, /implementation 'com\.google\.mlkit:text-recognition:16\.0\.1'/);
   assert.doesNotMatch(engine, /MAX_LINES/);
   assert.match(glossary, /INTERNAL_MARKER/);
   assert.match(glossary, /containsHan\(source\)/);
@@ -143,10 +149,17 @@ test("translation is on demand and cloud requires a full three-second hold", asy
 test("overlay uses an exact 110 percent blur mask and contrast-safe opposite color", async () => {
   const overlay = await readFile(overlaySourceUrl, "utf8");
   assert.match(overlay, /MASK_SCALE = 1\.10f/);
+  assert.match(overlay, /original\.width\(\) \* MASK_SCALE/);
+  assert.match(overlay, /original\.height\(\) \* MASK_SCALE/);
   assert.match(overlay, /RenderEffect\.createBlurEffect/);
   assert.match(overlay, /dominantColor/);
   assert.match(overlay, /oppositeColor/);
   assert.match(overlay, /MIN_CONTRAST = 4\.5f/);
+});
+
+test("OCR retains native Tab S9+ resolution for small text", async () => {
+  const engine = await readFile(engineSourceUrl, "utf8");
+  assert.match(engine, /MAX_OCR_LONG_EDGE = 3200/);
 });
 
 test("source punctuation is restored after local translation", async () => {

@@ -28,8 +28,9 @@ android {
 }
 
 dependencies {
-    // Bundled Latin OCR: available immediately and works offline.
-    implementation 'com.google.mlkit:text-recognition:16.0.1'
+    // Bundled Chinese + Latin OCR: available immediately, works offline, and lets
+    // the candidate builder exclude Han text before English is translated.
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
 
     // English -> Simplified Chinese model downloads once, then runs on device.
     implementation 'com.google.mlkit:translate:17.0.3'

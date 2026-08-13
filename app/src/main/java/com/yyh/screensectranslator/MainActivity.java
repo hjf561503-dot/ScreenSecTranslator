@@ -529,7 +529,7 @@ public final class MainActivity extends Activity {
                 connection.setReadTimeout(15_000);
                 connection.setRequestMethod("GET");
                 connection.setRequestProperty("Accept", "text/plain");
-                connection.setRequestProperty("User-Agent", "ScreenSecTranslator/2.0.4");
+                connection.setRequestProperty("User-Agent", "ScreenSecTranslator/2.1.0");
                 int status = connection.getResponseCode();
                 InputStream stream = status >= 200 && status < 300
                         ? connection.getInputStream() : connection.getErrorStream();
