@@ -1,23 +1,45 @@
 package com.yyh.screensectranslator;
 
+import android.content.Context;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class CyberGlossary {
+    static final String DICTIONARY_ASSET = "cyber-security-en-zh.tsv";
+    static final String DICTIONARY_CACHE = "cyber-security-en-zh-online.tsv";
+
     private static final LinkedHashMap<String, String> TERMS = new LinkedHashMap<>();
     private static final LinkedHashMap<String, String> EXACT = new LinkedHashMap<>();
+    private static volatile Map<String, String> externalExact = Collections.emptyMap();
+    private static volatile List<String> externalKeep = Collections.emptyList();
+    private static volatile String dictionaryVersion = "内置";
     private static final Pattern ENGLISH = Pattern.compile("[A-Za-z]{2,}");
+    private static final Pattern CAMEL_CASE = Pattern.compile(
+            "(?<![A-Za-z0-9])(?:[A-Z][a-z0-9]+){2,}(?![A-Za-z0-9])");
     private static final Pattern PROTECTED_DATA = Pattern.compile(
             "(?i)(https?://\\S+|CVE-\\d{4}-\\d{4,8}|\\b(?:\\d{1,3}\\.){3}\\d{1,3}(?::\\d{1,5})?\\b|"
                     + "\\b[a-f0-9]{32,64}\\b|(?:[A-Za-z]:\\\\|/)[^\\s]+|\\b[A-Z][A-Z0-9_-]{1,12}\\b)");
     private static final Pattern COMMAND_PREFIX = Pattern.compile(
             "(?i)^\\s*(?:[$>#]\\s*)?(?:adb|am|apt|bash|cat|chmod|curl|docker|git|grep|java|jq|kubectl|"
-                    + "netcat|nc|nmap|node|npm|pip|powershell|python|reg|sed|sh|ssh|sudo|systemctl|wget)\\b");
+                    + "dirb|ffuf|gobuster|hydra|msfconsole|netcat|nc|nikto|nmap|node|npm|nuclei|"
+                    + "pip|powershell|python|reg|sed|sh|sqlmap|ssh|sudo|systemctl|wget|wfuzz)\\b");
 
     static {
         term("command and control", "命令与控制（C2）");
@@ -105,10 +127,79 @@ final class CyberGlossary {
     private CyberGlossary() {
     }
 
+    static synchronized void loadDictionaries(Context context) {
+        LinkedHashMap<String, String> translated = new LinkedHashMap<>();
+        Set<String> kept = new HashSet<>();
+        String version = "内置";
+        try (InputStream input = context.getAssets().open(DICTIONARY_ASSET)) {
+            DictionaryData bundled = parseDictionary(input);
+            translated.putAll(bundled.translated);
+            kept.addAll(bundled.kept);
+            version = bundled.version;
+        } catch (Exception error) {
+            AppLog.error(context, "DICTIONARY", "BUNDLED_LOAD_FAILED", "", error);
+        }
+
+        File cached = new File(context.getFilesDir(), DICTIONARY_CACHE);
+        if (cached.exists()) {
+            try (InputStream input = new FileInputStream(cached)) {
+                DictionaryData online = parseDictionary(input);
+                translated.putAll(online.translated);
+                kept.addAll(online.kept);
+                version = online.version;
+            } catch (Exception error) {
+                AppLog.error(context, "DICTIONARY", "ONLINE_CACHE_LOAD_FAILED", "", error);
+            }
+        }
+        install(translated, kept, version);
+        AppLog.info(context, "DICTIONARY", "LOADED",
+                "version=" + cleanLog(version) + " translated=" + translated.size()
+                        + " protected_names=" + kept.size());
+    }
+
+    static synchronized DictionarySummary installOnlineUpdate(Context context, String body)
+            throws Exception {
+        if (body == null || body.length() > 512 * 1024) {
+            throw new IllegalArgumentException("术语库文件为空或过大");
+        }
+        DictionaryData update;
+        try (InputStream input = new java.io.ByteArrayInputStream(
+                body.getBytes(StandardCharsets.UTF_8))) {
+            update = parseDictionary(input);
+        }
+        if (update.translated.size() + update.kept.size() < 40
+                || !update.kept.contains("dirb")
+                || !update.kept.contains("dirbuster")) {
+            throw new IllegalArgumentException("术语库校验失败");
+        }
+        File target = new File(context.getFilesDir(), DICTIONARY_CACHE);
+        File temporary = new File(context.getFilesDir(), DICTIONARY_CACHE + ".tmp");
+        try (FileOutputStream output = new FileOutputStream(temporary, false)) {
+            output.write(body.getBytes(StandardCharsets.UTF_8));
+            output.getFD().sync();
+        }
+        if (target.exists() && !target.delete()) {
+            temporary.delete();
+            throw new IllegalStateException("无法替换旧术语库");
+        }
+        if (!temporary.renameTo(target)) {
+            temporary.delete();
+            throw new IllegalStateException("无法保存术语库");
+        }
+        loadDictionaries(context);
+        return new DictionarySummary(update.version,
+                update.translated.size(), update.kept.size());
+    }
+
+    static String dictionaryVersion() {
+        return dictionaryVersion;
+    }
+
     static boolean shouldTranslate(String source) {
         if (source == null) return false;
         String text = source.trim();
         if (text.length() < 2 || !ENGLISH.matcher(text).find()) return false;
+        if (externalKeep.contains(normalize(text))) return false;
         if (COMMAND_PREFIX.matcher(text).find()) return false;
         int letters = 0;
         int symbols = 0;
@@ -123,6 +214,8 @@ final class CyberGlossary {
     static String exactTranslation(String source) {
         if (source == null) return null;
         String normalized = source.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        String external = externalExact.get(normalized);
+        if (external != null) return external;
         String exact = EXACT.get(normalized);
         if (exact != null) return exact;
         return TERMS.get(normalized);
@@ -131,12 +224,72 @@ final class CyberGlossary {
     static ProtectedText protect(String source) {
         List<Replacement> replacements = new ArrayList<>();
         String encoded = replacePattern(source, PROTECTED_DATA, replacements, false);
+        encoded = replacePattern(encoded, CAMEL_CASE, replacements, false);
+        for (String name : externalKeep) {
+            Pattern pattern = Pattern.compile(
+                    "(?i)(?<![A-Za-z0-9])" + Pattern.quote(name) + "(?![A-Za-z0-9])");
+            encoded = replacePattern(encoded, pattern, replacements, false);
+        }
         for (Map.Entry<String, String> entry : TERMS.entrySet()) {
             Pattern pattern = Pattern.compile(
                     "(?i)(?<![A-Za-z0-9])" + Pattern.quote(entry.getKey()) + "(?![A-Za-z0-9])");
             encoded = replacePattern(encoded, pattern, replacements, true, entry.getValue());
         }
         return new ProtectedText(encoded, replacements);
+    }
+
+    private static void install(Map<String, String> translated, Set<String> kept, String version) {
+        List<Map.Entry<String, String>> translatedEntries = new ArrayList<>(translated.entrySet());
+        translatedEntries.sort((left, right) -> Integer.compare(
+                right.getKey().length(), left.getKey().length()));
+        LinkedHashMap<String, String> orderedTranslated = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : translatedEntries) {
+            orderedTranslated.put(entry.getKey(), entry.getValue());
+        }
+        List<String> orderedKept = new ArrayList<>(kept);
+        orderedKept.sort(Comparator.comparingInt(String::length).reversed());
+        externalExact = Collections.unmodifiableMap(orderedTranslated);
+        externalKeep = Collections.unmodifiableList(orderedKept);
+        dictionaryVersion = version == null || version.trim().isEmpty() ? "未知" : version;
+    }
+
+    private static DictionaryData parseDictionary(InputStream input) throws Exception {
+        LinkedHashMap<String, String> translated = new LinkedHashMap<>();
+        Set<String> kept = new HashSet<>();
+        String version = "未知";
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            String line;
+            int accepted = 0;
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("# version=")) {
+                    version = trimmed.substring("# version=".length()).trim();
+                    continue;
+                }
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                int tab = line.indexOf('\t');
+                if (tab <= 0 || tab >= line.length() - 1) continue;
+                String source = normalize(line.substring(0, tab));
+                String target = line.substring(tab + 1).trim();
+                if (source.length() < 2 || source.length() > 100
+                        || target.isEmpty() || target.length() > 160) continue;
+                if ("@KEEP".equalsIgnoreCase(target)) kept.add(source);
+                else translated.put(source, target);
+                accepted++;
+                if (accepted >= 2000) break;
+            }
+        }
+        return new DictionaryData(translated, kept, version);
+    }
+
+    private static String normalize(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", " ")
+                .toLowerCase(Locale.ROOT);
+    }
+
+    private static String cleanLog(String value) {
+        return value == null ? "" : value.replace('\n', ' ').replace('\r', ' ');
     }
 
     private static String replacePattern(String input, Pattern pattern,
@@ -197,6 +350,31 @@ final class CyberGlossary {
         Replacement(String token, String value) {
             this.token = token;
             this.value = value;
+        }
+    }
+
+    static final class DictionarySummary {
+        final String version;
+        final int translations;
+        final int protectedNames;
+
+        DictionarySummary(String version, int translations, int protectedNames) {
+            this.version = version;
+            this.translations = translations;
+            this.protectedNames = protectedNames;
+        }
+    }
+
+    private static final class DictionaryData {
+        final LinkedHashMap<String, String> translated;
+        final Set<String> kept;
+        final String version;
+
+        DictionaryData(LinkedHashMap<String, String> translated,
+                       Set<String> kept, String version) {
+            this.translated = translated;
+            this.kept = kept;
+            this.version = version;
         }
     }
 }

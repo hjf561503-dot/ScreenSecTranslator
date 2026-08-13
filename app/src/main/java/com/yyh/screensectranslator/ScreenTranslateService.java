@@ -461,9 +461,13 @@ public final class ScreenTranslateService extends Service {
                     if (!moved && event.getActionMasked() == MotionEvent.ACTION_UP) {
                         long held = event.getEventTime() - downAt;
                         if (held >= LONG_PRESS_MS) {
+                            AppLog.info(ScreenTranslateService.this, "BUBBLE", "LONG_PRESSED",
+                                    "online_refinement=" + onlineRefinementEnabled);
                             if (onlineRefinementEnabled) requestOnlineRefinement();
                             else toast("在线精译未开启；实时翻译不会调用 API");
                         } else {
+                            AppLog.info(ScreenTranslateService.this, "BUBBLE", "TAPPED",
+                                    "model_ready=" + modelReady + " busy=" + busy.get());
                             requestLocalTranslation(true, true);
                         }
                     }
@@ -744,37 +748,35 @@ public final class ScreenTranslateService extends Service {
             removeTranslationOverlay();
             return;
         }
-        if (translationOverlay == null) {
-            translationOverlay = new TranslationOverlayView(this);
-            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                    PixelFormat.TRANSLUCENT);
-            params.gravity = Gravity.TOP | Gravity.START;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                params.layoutInDisplayCutoutMode =
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-            }
-            windowManager.addView(translationOverlay, params);
-            bringBubbleToFront();
-        }
-        translationOverlay.setVisibility(View.VISIBLE);
-        translationOverlay.setTranslations(translations, attribution);
-        AppLog.info(this, "OVERLAY", "UPDATED",
-                "translations=" + translations.size() + " attribution=" + attribution);
-    }
-
-    private void bringBubbleToFront() {
-        if (bubbleView == null) return;
         try {
-            windowManager.removeView(bubbleView);
-            windowManager.addView(bubbleView, bubbleParams);
-        } catch (IllegalArgumentException ignored) {
+            if (translationOverlay == null) {
+                TranslationOverlayView candidate = new TranslationOverlayView(this);
+                WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        PixelFormat.TRANSLUCENT);
+                params.gravity = Gravity.TOP | Gravity.START;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    params.layoutInDisplayCutoutMode =
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                }
+                windowManager.addView(candidate, params);
+                translationOverlay = candidate;
+            }
+            translationOverlay.setVisibility(View.VISIBLE);
+            translationOverlay.setTranslations(translations, attribution);
+            AppLog.info(this, "OVERLAY", "UPDATED",
+                    "translations=" + translations.size() + " attribution=" + attribution);
+        } catch (RuntimeException error) {
+            AppLog.error(this, "OVERLAY", "UPDATE_FAILED_KEEPING_BUBBLE",
+                    "translations=" + translations.size(), error);
+            removeTranslationOverlay();
+            toast("译文覆盖层创建失败；悬浮球仍会保留");
         }
     }
 

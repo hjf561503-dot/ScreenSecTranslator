@@ -1,9 +1,18 @@
-# 屏译·安全术语版 2.0.2
+# 屏译·安全术语版 2.0.3
 
 [![CI and Android APK](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml)
 [![CodeQL](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml)
 
 原生 Android 悬浮翻译工具。启动一次后，它会持续识别当前屏幕中的英文，在设备本地翻译成简体中文，并把译文自动覆盖到原文附近。默认模式不调用云端 API、不上传截图，也不需要代理服务。
+
+## 2.0.3 模型状态、术语与悬浮球修复
+
+- 启动前用 ML Kit 官方模型管理接口检查中文模型是否真实存在；只有“下载任务成功 + 设备二次校验成功”后才显示已就绪并申请录屏权限。
+- 模型已存在时不会再次下载；缺少模型时明确显示约 30MB、下载中和校验状态。ML Kit 没有提供模型下载百分比接口，因此不会伪造进度。
+- 悬浮球不再为了覆盖层置顶而从 WindowManager 删除并重新添加；整个运行期保持同一个窗口实例，只在用户停止服务时删除。
+- 内置小型网络安全英中术语库，并可从本项目 GitHub 免费更新 TSV。更新只下载公开术语文件，不上传屏幕文字且不需要 API 密钥。
+- Dirb、DirBuster、Gobuster、Nmap、Burp Suite、Metasploit 等工具名保持英文；CamelCase 产品名、URL、命令、路径、CVE、哈希和缩写也继续保护。
+- 欧路官方公开接口没有提供可免费批量取回英中释义的接口，因此本项目不抓取欧路网页；可继续把欧路作为人工查词工具使用。
 
 ## 2.0 已实现
 

@@ -5,7 +5,6 @@ import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.SystemClock;
 
-import com.google.mlkit.common.model.DownloadConditions;
 import com.google.mlkit.nl.translate.TranslateLanguage;
 import com.google.mlkit.nl.translate.Translation;
 import com.google.mlkit.nl.translate.Translator;
@@ -50,7 +49,7 @@ final class OfflineTranslationEngine implements AutoCloseable {
     private final TextRecognizer recognizer = TextRecognition.getClient(
             TextRecognizerOptions.DEFAULT_OPTIONS);
     private final Translator translator;
-    private final Map<String, String> cache = Collections.synchronizedMap(
+    private static final Map<String, String> SHARED_CACHE = Collections.synchronizedMap(
             new LinkedHashMap<String, String>(MAX_CACHE_ENTRIES, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
@@ -66,6 +65,7 @@ final class OfflineTranslationEngine implements AutoCloseable {
                 .setTargetLanguage(TranslateLanguage.CHINESE)
                 .build();
         translator = Translation.getClient(options);
+        CyberGlossary.loadDictionaries(this.context);
     }
 
     void prepare(PrepareCallback callback) {
@@ -73,11 +73,20 @@ final class OfflineTranslationEngine implements AutoCloseable {
             callback.onReady();
             return;
         }
-        DownloadConditions conditions = new DownloadConditions.Builder().build();
-        translator.downloadModelIfNeeded(conditions)
-                .addOnSuccessListener(unused -> {
-                    modelReady = true;
-                    callback.onReady();
+        OfflineModelState.isDownloaded()
+                .addOnSuccessListener(downloaded -> {
+                    if (Boolean.TRUE.equals(downloaded)) {
+                        modelReady = true;
+                        callback.onReady();
+                        return;
+                    }
+                    OfflineModelState.download()
+                            .addOnSuccessListener(unused -> {
+                                modelReady = true;
+                                callback.onReady();
+                            })
+                            .addOnFailureListener(error ->
+                                    callback.onFailure(asException(error)));
                 })
                 .addOnFailureListener(error -> callback.onFailure(asException(error)));
     }
@@ -147,7 +156,7 @@ final class OfflineTranslationEngine implements AutoCloseable {
                 continue;
             }
 
-            String cached = cache.get(candidate.source);
+            String cached = SHARED_CACHE.get(candidate.source);
             if (cached != null) {
                 addResult(results, candidate, cached, imageWidth, imageHeight);
                 cacheHits++;
@@ -204,7 +213,7 @@ final class OfflineTranslationEngine implements AutoCloseable {
                         String translated = matcher.group(2) == null
                                 ? "" : matcher.group(2).trim();
                         if (translated.isEmpty()) continue;
-                        cache.put(candidate.source, translated);
+                        SHARED_CACHE.put(candidate.source, translated);
                         addResult(results, candidate, translated, imageWidth, imageHeight);
                         parsed++;
                     }
@@ -296,6 +305,5 @@ final class OfflineTranslationEngine implements AutoCloseable {
     public void close() {
         recognizer.close();
         translator.close();
-        cache.clear();
     }
 }

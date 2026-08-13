@@ -28,12 +28,6 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.google.mlkit.common.model.DownloadConditions;
-import com.google.mlkit.nl.translate.TranslateLanguage;
-import com.google.mlkit.nl.translate.Translation;
-import com.google.mlkit.nl.translate.Translator;
-import com.google.mlkit.nl.translate.TranslatorOptions;
-
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -60,6 +54,10 @@ public final class MainActivity extends Activity {
     private static final int REQ_NOTIFICATIONS = 1003;
     private static final int REQ_EXPORT_LOG = 1004;
     private static final String LOG_EXPORT_PASSWORD = "20121013";
+    private static final String FREE_DICTIONARY_URL =
+            "https://raw.githubusercontent.com/hjf561503-dot/ScreenSecTranslator/"
+                    + "refs/heads/agent/offline-realtime-v2/"
+                    + "app/src/main/assets/cyber-security-en-zh.tsv";
 
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private EditText proxyUrlInput;
@@ -69,8 +67,12 @@ public final class MainActivity extends Activity {
     private SeekBar intervalInput;
     private TextView intervalLabel;
     private TextView statusText;
+    private TextView modelStatusText;
+    private Button modelButton;
+    private Button startButton;
     private boolean waitingToStart;
-    private Translator predownloadTranslator;
+    private boolean modelOperationInProgress;
+    private boolean startAfterModelReady;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,6 +80,14 @@ public final class MainActivity extends Activity {
         AppLog.appStarted(this);
         migrateSpeedDefault();
         setContentView(buildUi());
+        CyberGlossary.loadDictionaries(this);
+        refreshOfflineModelStatus();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshOfflineModelStatus();
     }
 
     private void migrateSpeedDefault() {
@@ -110,7 +120,7 @@ public final class MainActivity extends Activity {
         eyebrow.setLetterSpacing(0.12f);
         root.addView(eyebrow);
 
-        TextView title = text("屏译·安全术语版 2.0", 30, Color.WHITE);
+        TextView title = text("屏译·安全术语版 2.0.3", 30, Color.WHITE);
         title.setPadding(0, dp(8), 0, dp(8));
         root.addView(title);
 
@@ -165,15 +175,31 @@ public final class MainActivity extends Activity {
                 Color.rgb(151, 165, 185));
         root.addView(speedTip, fullWidth(dp(4)));
 
-        Button modelButton = secondaryButton("提前下载离线中英翻译模型");
+        modelButton = secondaryButton("检查离线中英翻译模型状态");
         modelButton.setOnClickListener(v -> downloadOfflineModel());
         root.addView(modelButton, fullWidth(dp(12)));
+
+        modelStatusText = text("模型状态：正在检查设备…", 13,
+                Color.rgb(255, 206, 107));
+        root.addView(modelStatusText, fullWidth(dp(6)));
 
         TextView googleAttribution = text("由 Google 翻译提供支持 · 查看 Google 翻译", 13,
                 Color.rgb(114, 197, 255));
         googleAttribution.setOnClickListener(v -> startActivity(new Intent(
                 Intent.ACTION_VIEW, Uri.parse("https://translate.google.com"))));
         root.addView(googleAttribution, fullWidth(dp(8)));
+
+        root.addView(sectionTitle("免费安全术语库"), fullWidth(dp(22)));
+        TextView dictionaryTip = text(
+                "APK 已内置小型网络安全术语库。可从本项目 GitHub 免费更新 TSV；只下载术语，不上传截图或 OCR 文字，也不需要 API 密钥。Dirb、DirBuster、Nmap 等工具名会保持原文。",
+                13,
+                Color.rgb(151, 165, 185));
+        dictionaryTip.setLineSpacing(dp(3), 1f);
+        root.addView(dictionaryTip, fullWidth(dp(6)));
+
+        Button dictionaryButton = secondaryButton("更新免费安全术语库");
+        dictionaryButton.setOnClickListener(v -> updateFreeDictionary(dictionaryButton));
+        root.addView(dictionaryButton, fullWidth(dp(8)));
 
         root.addView(sectionTitle("在线 AI 精译（可选，默认关闭）"), fullWidth(dp(22)));
         onlineRefinementInput = checkBox("允许长按悬浮球上传当前画面进行一次精译");
@@ -203,7 +229,7 @@ public final class MainActivity extends Activity {
         testButton.setOnClickListener(v -> testProxy());
         root.addView(testButton, fullWidth(dp(10)));
 
-        Button startButton = primaryButton("启动离线实时翻译（由 Google 翻译提供支持）");
+        startButton = primaryButton("启动离线实时翻译（由 Google 翻译提供支持）");
         startButton.setOnClickListener(v -> beginStartFlow());
         root.addView(startButton, fullWidth(dp(16)));
 
@@ -249,32 +275,39 @@ public final class MainActivity extends Activity {
     }
 
     private void downloadOfflineModel() {
-        if (predownloadTranslator != null) {
-            statusText.setText("离线模型正在下载，请稍候…");
-            return;
-        }
-        TranslatorOptions options = new TranslatorOptions.Builder()
-                .setSourceLanguage(TranslateLanguage.ENGLISH)
-                .setTargetLanguage(TranslateLanguage.CHINESE)
-                .build();
-        predownloadTranslator = Translation.getClient(options);
-        statusText.setText("正在下载离线中英模型；下载完成后可断网使用…");
-        statusText.setTextColor(Color.rgb(255, 206, 107));
-        predownloadTranslator.downloadModelIfNeeded(new DownloadConditions.Builder().build())
-                .addOnSuccessListener(unused -> {
-                    statusText.setText("离线模型已准备完成，可以启动实时翻译");
-                    statusText.setTextColor(Color.rgb(77, 225, 193));
-                    closePredownloadTranslator();
-                })
-                .addOnFailureListener(error -> {
-                    statusText.setText("离线模型下载失败：" + compact(error.getMessage()));
-                    statusText.setTextColor(Color.rgb(255, 122, 122));
-                    closePredownloadTranslator();
-                });
+        startAfterModelReady = false;
+        beginModelDownload();
     }
 
     private void beginStartFlow() {
         if (!saveSettings()) return;
+        if (modelOperationInProgress) {
+            startAfterModelReady = true;
+            statusText.setText("正在等待离线模型下载完成；完成后会继续启动");
+            statusText.setTextColor(Color.rgb(255, 206, 107));
+            return;
+        }
+        startAfterModelReady = true;
+        modelOperationInProgress = true;
+        setModelCheckingUi();
+        OfflineModelState.isDownloaded()
+                .addOnSuccessListener(downloaded -> {
+                    modelOperationInProgress = false;
+                    if (Boolean.TRUE.equals(downloaded)) {
+                        showModelReady();
+                        continueStartFlow();
+                    } else {
+                        beginModelDownload();
+                    }
+                })
+                .addOnFailureListener(error -> {
+                    modelOperationInProgress = false;
+                    showModelFailure("无法检查模型：" + compact(error.getMessage()));
+                });
+    }
+
+    private void continueStartFlow() {
+        startAfterModelReady = false;
         waitingToStart = true;
         if (!Settings.canDrawOverlays(this)) {
             statusText.setText("请允许本应用显示悬浮窗");
@@ -284,6 +317,97 @@ public final class MainActivity extends Activity {
             return;
         }
         requestNotificationThenCapture();
+    }
+
+    private void refreshOfflineModelStatus() {
+        if (modelOperationInProgress || modelStatusText == null) return;
+        modelOperationInProgress = true;
+        setModelCheckingUi();
+        OfflineModelState.isDownloaded()
+                .addOnSuccessListener(downloaded -> {
+                    modelOperationInProgress = false;
+                    if (Boolean.TRUE.equals(downloaded)) {
+                        showModelReady();
+                        if (startAfterModelReady) continueStartFlow();
+                    } else if (startAfterModelReady) {
+                        beginModelDownload();
+                    } else {
+                        showModelMissing();
+                    }
+                })
+                .addOnFailureListener(error -> {
+                    modelOperationInProgress = false;
+                    startAfterModelReady = false;
+                    showModelFailure("检查失败：" + compact(error.getMessage()));
+                });
+    }
+
+    private void beginModelDownload() {
+        if (modelOperationInProgress) return;
+        modelOperationInProgress = true;
+        modelButton.setEnabled(false);
+        modelButton.setText("正在下载离线模型…");
+        modelStatusText.setText("模型状态：下载中（约 30MB；ML Kit 不提供百分比）");
+        modelStatusText.setTextColor(Color.rgb(255, 206, 107));
+        statusText.setText("正在下载离线中英模型；下载成功前不会申请录屏权限");
+        statusText.setTextColor(Color.rgb(255, 206, 107));
+        AppLog.info(this, "MODEL", "DOWNLOAD_STARTED", "source=remote_model_manager");
+        OfflineModelState.download()
+                .addOnSuccessListener(unused -> OfflineModelState.isDownloaded()
+                        .addOnSuccessListener(downloaded -> {
+                            modelOperationInProgress = false;
+                            if (!Boolean.TRUE.equals(downloaded)) {
+                                startAfterModelReady = false;
+                                showModelFailure("下载任务结束，但设备仍未检测到模型");
+                                return;
+                            }
+                            AppLog.info(this, "MODEL", "DOWNLOAD_VERIFIED", "downloaded=true");
+                            showModelReady();
+                            statusText.setText("离线模型已下载并验证，可以启动实时翻译");
+                            statusText.setTextColor(Color.rgb(77, 225, 193));
+                            if (startAfterModelReady) continueStartFlow();
+                        })
+                        .addOnFailureListener(error -> {
+                            modelOperationInProgress = false;
+                            startAfterModelReady = false;
+                            showModelFailure("下载后校验失败：" + compact(error.getMessage()));
+                        }))
+                .addOnFailureListener(error -> {
+                    modelOperationInProgress = false;
+                    startAfterModelReady = false;
+                    AppLog.error(this, "MODEL", "DOWNLOAD_FAILED", "", error);
+                    showModelFailure("下载失败：" + compact(error.getMessage()));
+                });
+    }
+
+    private void setModelCheckingUi() {
+        modelButton.setEnabled(false);
+        modelButton.setText("正在检查离线模型…");
+        modelStatusText.setText("模型状态：正在读取设备中的实际下载状态");
+        modelStatusText.setTextColor(Color.rgb(255, 206, 107));
+    }
+
+    private void showModelReady() {
+        modelButton.setEnabled(false);
+        modelButton.setText("离线模型已下载并验证（无需重复下载）");
+        modelStatusText.setText("模型状态：已就绪；启动时不会再次下载");
+        modelStatusText.setTextColor(Color.rgb(77, 225, 193));
+    }
+
+    private void showModelMissing() {
+        modelButton.setEnabled(true);
+        modelButton.setText("下载离线中英翻译模型（约 30MB）");
+        modelStatusText.setText("模型状态：未下载；点击启动也会先下载并验证");
+        modelStatusText.setTextColor(Color.rgb(255, 206, 107));
+    }
+
+    private void showModelFailure(String message) {
+        modelButton.setEnabled(true);
+        modelButton.setText("重新检查/下载离线模型");
+        modelStatusText.setText("模型状态：" + message);
+        modelStatusText.setTextColor(Color.rgb(255, 122, 122));
+        statusText.setText(message);
+        statusText.setTextColor(Color.rgb(255, 122, 122));
     }
 
     private void requestNotificationThenCapture() {
@@ -377,8 +501,8 @@ public final class MainActivity extends Activity {
                 startService(service);
             }
             statusText.setText(realtimeInput.isChecked()
-                    ? "已启动：模型就绪后会自动连续翻译"
-                    : "已启动：点击悬浮球进行离线翻译");
+                    ? "已启动：离线模型已验证，正在连续翻译"
+                    : "已启动：离线模型已验证，点击悬浮球即可翻译");
             statusText.setTextColor(Color.rgb(77, 225, 193));
             AppLog.info(this, "ACTIVITY", "SERVICE_START_REQUESTED",
                     "realtime=" + realtimeInput.isChecked());
@@ -465,13 +589,72 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void updateFreeDictionary(Button button) {
+        button.setEnabled(false);
+        button.setText("正在下载术语库…");
+        statusText.setText("正在从项目 GitHub 下载免费术语 TSV；不会上传屏幕文字");
+        statusText.setTextColor(Color.rgb(255, 206, 107));
+        networkExecutor.execute(() -> {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(FREE_DICTIONARY_URL).openConnection();
+                connection.setConnectTimeout(10_000);
+                connection.setReadTimeout(15_000);
+                connection.setRequestMethod("GET");
+                connection.setRequestProperty("Accept", "text/plain");
+                connection.setRequestProperty("User-Agent", "ScreenSecTranslator/2.0.3");
+                int status = connection.getResponseCode();
+                InputStream stream = status >= 200 && status < 300
+                        ? connection.getInputStream() : connection.getErrorStream();
+                String body = readText(stream, status >= 200 && status < 300
+                        ? 512 * 1024 : 4096);
+                if (status < 200 || status >= 300) {
+                    throw new IllegalStateException("HTTP " + status + " " + compact(body));
+                }
+                CyberGlossary.DictionarySummary summary =
+                        CyberGlossary.installOnlineUpdate(this, body);
+                AppLog.info(this, "DICTIONARY", "ONLINE_UPDATE_COMPLETED",
+                        "version=" + summary.version + " translations=" + summary.translations
+                                + " protected_names=" + summary.protectedNames);
+                runOnUiThread(() -> {
+                    button.setEnabled(true);
+                    button.setText("重新检查免费安全术语库");
+                    statusText.setText("安全术语库已更新：" + summary.version
+                            + "；译词 " + summary.translations
+                            + " 条，保护工具名 " + summary.protectedNames + " 条");
+                    statusText.setTextColor(Color.rgb(77, 225, 193));
+                });
+            } catch (Exception error) {
+                AppLog.error(this, "DICTIONARY", "ONLINE_UPDATE_FAILED", "", error);
+                runOnUiThread(() -> {
+                    button.setEnabled(true);
+                    button.setText("重试更新免费安全术语库");
+                    statusText.setText("在线术语库更新失败，继续使用 APK 内置版本："
+                            + compact(error.getMessage()));
+                    statusText.setTextColor(Color.rgb(255, 122, 122));
+                });
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        });
+    }
+
     private static String readText(InputStream stream) throws Exception {
+        return readText(stream, 4096);
+    }
+
+    private static String readText(InputStream stream, int limit) throws Exception {
         if (stream == null) return "";
         StringBuilder out = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             String line;
-            while ((line = reader.readLine()) != null && out.length() < 4096) out.append(line);
+            while ((line = reader.readLine()) != null) {
+                if (out.length() + line.length() + 1 > limit) {
+                    throw new IllegalStateException("响应内容超过限制");
+                }
+                out.append(line).append('\n');
+            }
         }
         return out.toString();
     }
@@ -567,16 +750,8 @@ public final class MainActivity extends Activity {
         return Math.max(min, Math.min(max, value));
     }
 
-    private void closePredownloadTranslator() {
-        if (predownloadTranslator != null) {
-            predownloadTranslator.close();
-            predownloadTranslator = null;
-        }
-    }
-
     @Override
     protected void onDestroy() {
-        closePredownloadTranslator();
         networkExecutor.shutdownNow();
         super.onDestroy();
     }
