@@ -22,7 +22,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Pattern;
 
 final class OfflineTranslationEngine implements AutoCloseable {
     interface PrepareCallback {
@@ -52,14 +51,9 @@ final class OfflineTranslationEngine implements AutoCloseable {
         }
     }
 
-    private static final int MAX_LINES = 100;
     private static final int LINES_PER_PASS = 12;
     private static final int MAX_OCR_LONG_EDGE = 1800;
     private static final int MAX_CACHE_ENTRIES = 800;
-    private static final Pattern HAN = Pattern.compile("[\\p{IsHan}]");
-    private static final Pattern INTERNAL_MARKER = Pattern.compile(
-            "(?i)(?:ZZX|XZZ|QSEG\\d{0,3}|ZX\\d{3}[A-Z]*)");
-
     private final Context context;
     private final TextRecognizer recognizer = TextRecognition.getClient(
             TextRecognizerOptions.DEFAULT_OPTIONS);
@@ -105,10 +99,6 @@ final class OfflineTranslationEngine implements AutoCloseable {
                                     callback.onFailure(asException(error)));
                 })
                 .addOnFailureListener(error -> callback.onFailure(asException(error)));
-    }
-
-    synchronized boolean hasPendingPageWork() {
-        return pageSession != null && pageSession.nextIndex < pageSession.candidates.size();
     }
 
     synchronized void clearPage() {
@@ -167,13 +157,8 @@ final class OfflineTranslationEngine implements AutoCloseable {
         List<Candidate> candidates = new ArrayList<>();
         for (Text.TextBlock block : recognized.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
-                if (candidates.size() >= MAX_LINES) break;
-                String source = line.getText() == null ? "" : line.getText().trim();
-                Rect box = line.getBoundingBox();
-                if (box == null || !CyberGlossary.shouldTranslate(source)) continue;
-                candidates.add(new Candidate(source, box));
+                addLineCandidates(line, candidates);
             }
-            if (candidates.size() >= MAX_LINES) break;
         }
         candidates.sort(Comparator
                 .comparingInt((Candidate item) -> item.box.top)
@@ -181,6 +166,44 @@ final class OfflineTranslationEngine implements AutoCloseable {
         AppLog.info(context, "TRANSLATE", "PAGE_CANDIDATES_READY",
                 "candidates=" + candidates.size() + " lines_per_pass=" + LINES_PER_PASS);
         return new PageSession(candidates, imageWidth, imageHeight, startedAt, ocrFinishedAt);
+    }
+
+    private static void addLineCandidates(Text.Line line, List<Candidate> candidates) {
+        String fullText = clean(line.getText());
+        Rect fullBox = line.getBoundingBox();
+        if (fullBox == null || fullText.isEmpty()) return;
+        if (!CyberGlossary.containsHan(fullText)) {
+            if (CyberGlossary.shouldTranslate(fullText)) {
+                candidates.add(new Candidate(fullText, fullBox));
+            }
+            return;
+        }
+
+        RunBuilder run = new RunBuilder();
+        for (Text.Element element : line.getElements()) {
+            String text = clean(element.getText());
+            Rect box = element.getBoundingBox();
+            if (text.isEmpty() || box == null || CyberGlossary.containsHan(text)) {
+                flushRun(run, candidates);
+                continue;
+            }
+            if (CyberGlossary.containsEnglish(text)) {
+                run.append(text, box);
+            } else {
+                run.append(text, box);
+            }
+        }
+        flushRun(run, candidates);
+    }
+
+    private static void flushRun(RunBuilder run, List<Candidate> candidates) {
+        if (run.isEmpty()) return;
+        String source = run.source();
+        Rect box = run.box();
+        if (!CyberGlossary.containsHan(source) && CyberGlossary.shouldTranslate(source)) {
+            candidates.add(new Candidate(source, box));
+        }
+        run.clear();
     }
 
     private void processNextPass(PageSession session, TranslationCallback callback) {
@@ -220,7 +243,7 @@ final class OfflineTranslationEngine implements AutoCloseable {
             // One OCR line per request. No model-visible separators or placeholder tokens.
             translator.translate(candidate.source)
                     .addOnSuccessListener(raw -> {
-                        String translated = CyberGlossary.polishTranslation(candidate.source, raw);
+                        String translated = CyberGlossary.sanitizeTranslation(candidate.source, raw);
                         if (acceptTranslation(session, candidate, translated, "model")) {
                             SHARED_CACHE.put(candidate.source, translated);
                         } else {
@@ -240,8 +263,9 @@ final class OfflineTranslationEngine implements AutoCloseable {
 
     private boolean acceptTranslation(PageSession session, Candidate candidate,
                                       String translated, String origin) {
-        if (!passesQualityGate(candidate.source, translated)) return false;
-        ScreenTranslation result = toResult(candidate, translated,
+        String clean = CyberGlossary.sanitizeTranslation(candidate.source, translated);
+        if (clean == null) return false;
+        ScreenTranslation result = toResult(candidate, clean,
                 session.imageWidth, session.imageHeight);
         if (result == null) return false;
         synchronized (this) {
@@ -250,17 +274,8 @@ final class OfflineTranslationEngine implements AutoCloseable {
         }
         AppLog.info(context, "TRANSLATE", "LINE_ACCEPTED",
                 "origin=" + origin + " source_chars=" + candidate.source.length()
-                        + " output_chars=" + translated.length());
+                        + " output_chars=" + clean.length());
         return true;
-    }
-
-    private static boolean passesQualityGate(String source, String translated) {
-        if (translated == null || translated.trim().isEmpty()) return false;
-        String clean = translated.trim();
-        if (INTERNAL_MARKER.matcher(clean).find()) return false;
-        if (!HAN.matcher(clean).find()) return false;
-        if (normalize(source).equals(normalize(clean))) return false;
-        return CyberGlossary.protectedTokensPreserved(source, clean);
     }
 
     private void finishLine(PageSession session, AtomicInteger remaining,
@@ -314,10 +329,6 @@ final class OfflineTranslationEngine implements AutoCloseable {
         return Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true);
     }
 
-    private static String normalize(String value) {
-        return value == null ? "" : value.replaceAll("[\\s\\p{Punct}]", "").toLowerCase();
-    }
-
     private static int safeLength(String value) {
         return value == null ? 0 : value.length();
     }
@@ -353,6 +364,49 @@ final class OfflineTranslationEngine implements AutoCloseable {
             this.source = source;
             this.box = new Rect(box);
         }
+    }
+
+    private static final class RunBuilder {
+        private final StringBuilder text = new StringBuilder();
+        private Rect bounds;
+
+        void append(String value, Rect box) {
+            if (value == null || value.isEmpty()) return;
+            if (text.length() > 0 && needsSpace(text.charAt(text.length() - 1), value.charAt(0))) {
+                text.append(' ');
+            }
+            text.append(value);
+            if (bounds == null) bounds = new Rect(box);
+            else bounds.union(box);
+        }
+
+        boolean isEmpty() {
+            return text.length() == 0 || bounds == null;
+        }
+
+        String source() {
+            return clean(text.toString());
+        }
+
+        Rect box() {
+            return new Rect(bounds);
+        }
+
+        void clear() {
+            text.setLength(0);
+            bounds = null;
+        }
+
+        private static boolean needsSpace(char left, char right) {
+            if (Character.isWhitespace(left) || Character.isWhitespace(right)) return false;
+            String noSpaceBefore = ",.!?;:%)]}，。！？；：、";
+            String noSpaceAfter = "([{“‘";
+            return noSpaceBefore.indexOf(right) < 0 && noSpaceAfter.indexOf(left) < 0;
+        }
+    }
+
+    private static String clean(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", " ").trim();
     }
 
     @Override

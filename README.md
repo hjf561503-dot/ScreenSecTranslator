@@ -1,186 +1,94 @@
-# 屏译·安全术语版 2.0.4
+# 屏译·安全术语版 2.1.0
 
 [![CI and Android APK](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml)
 [![CodeQL](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml)
 
-原生 Android 悬浮翻译工具。启动一次后，它会持续识别当前屏幕中的英文，在设备本地翻译成简体中文，并把译文自动覆盖到原文附近。默认模式不调用云端 API、不上传截图，也不需要代理服务。
+面向网络安全学习场景的 Android 悬浮屏幕翻译工具。2.1.0 已删除后台实时扫描：短按悬浮球只在本机截取一帧，并在这张画面内分批处理到整页英文全部完成；连续按住满 3 秒才尝试调用用户配置的云端代理。
 
-## 2.0.4 逐行翻译与静态页面补全
+## 2.1.0 交互与覆盖规则
 
-- 删除会泄漏为 `ZZX/XZZ` 的术语占位符和会被模型破坏的批量行分隔符；每个 OCR 文本行现在独立翻译、独立定位，行与行之间不会再被粘连。
-- 静态页面不再首轮后直接跳过：每轮处理一小批尚未完成的行，译文累计覆盖，直到当前页面全部候选文本处理完毕。
-- 新增输出质量闸门：没有中文、与英文原文相同、含内部标记，或损坏 URL、IP、CVE、哈希、路径、工具名及安全缩写的结果都不会显示。
-- OCR 长边提高到 1800 像素、每页最多处理 100 行，并补充安全仪表盘、SQL 注入、告警状态等免费本地术语。
+- 不存在定时器、自动刷新或“页面不动再扫一次”的后台循环。
+- 短按：本机 OCR + ML Kit 英译中 + 网络安全术语修正。一次点击会连续处理所有批次，不需要重复点击。
+- 长按：手指保持满 3 秒且未拖动时才触发一次云端精译。短于 3 秒只会执行本地翻译。
+- 纯英文行按整行翻译；中英混排行按 OCR 元素拆分，任何含汉字的源片段都不会送入本地或云端翻译器。
+- 不限制每页候选行总数。翻译会分批完成，但始终使用同一张主动截图。
+- 译文显示前必须通过质量闸门：含内部占位符、没有中文、等同英文原文、损坏 URL/IP/CVE/哈希/路径/工具名/安全缩写的结果会被拒绝。
+- 恢复英文原文的句末标点序列；URL、IP、版本号、命令和标识符内部的标点保持不变。
+- 每个原文字框先绘制总宽高为原框 110% 的局部模糊蒙版，再在其上放置译文。
+- 每个框从截图区域计算主色，优先使用 RGB 反色；对比度不足 4.5:1 时自动切换黑色或白色。
 
-## 2.0.3 模型状态、术语与悬浮球修复
-
-- 启动前用 ML Kit 官方模型管理接口检查中文模型是否真实存在；只有“下载任务成功 + 设备二次校验成功”后才显示已就绪并申请录屏权限。
-- 模型已存在时不会再次下载；缺少模型时明确显示约 30MB、下载中和校验状态。ML Kit 没有提供模型下载百分比接口，因此不会伪造进度。
-- 悬浮球不再为了覆盖层置顶而从 WindowManager 删除并重新添加；整个运行期保持同一个窗口实例，只在用户停止服务时删除。
-- 内置小型网络安全英中术语库，并可从本项目 GitHub 免费更新 TSV。更新只下载公开术语文件，不上传屏幕文字且不需要 API 密钥。
-- Dirb、DirBuster、Gobuster、Nmap、Burp Suite、Metasploit 等工具名保持英文；CamelCase 产品名、URL、命令、路径、CVE、哈希和缩写也继续保护。
-- 欧路官方公开接口没有提供可免费批量取回英中释义的接口，因此本项目不抓取欧路网页；可继续把欧路作为人工查词工具使用。
-
-## 2.0 已实现
-
-- 默认开启实时循环，可在 0.3–2.0 秒间调整，默认 0.6 秒。
-- 使用内置的 ML Kit 拉丁文字识别；中英翻译模型首次下载后可离线运行。
-- 已删除悬浮球和译文层上的 `FLAG_SECURE`，不会再阻止用户正常截图；本机 OCR 取帧时只短暂隐藏自身覆盖层，避免重复识别译文。
-- 取帧改为监听 `ImageReader` 新帧事件并用 `acquireLatestImage()` 取得最新帧，首帧最长等待约 3 秒，修复已授权却提示“暂时没有取得屏幕画面”的问题。
-- OCR 会先把长边限制到 1800 像素；每个 OCR 行独立翻译，避免批量分隔符破坏空格、标点与布局。
-- 用画面指纹识别静态页面；未处理完时继续翻译下一批并累计覆盖，完成后才跳过，用 800 条 LRU 缓存复用已翻译句子。
-- 本地安全术语表会固定“权限提升、凭据转储、横向移动、失陷指标（IOC）、命令与控制（C2）”等译法。
-- URL、IP、端口、CVE、哈希、文件路径、命令、源码和常见缩写会尽量保持原样。
-- 译文按 OCR 行的坐标覆盖；普通点击悬浮球会立即离线刷新。
-- 可选在线 AI 精译默认关闭。只有用户主动开启后长按悬浮球，才上传当前一帧；代理优先使用 Gemini，未配置时可后备到 OpenAI。
-- 已适配 Android 14+ MediaProjection 前台服务规则，可在 Android 16 设备上运行。
-- 每次推送和拉取请求都会运行代理测试、密钥扫描并构建 APK；每周一会自动执行一次完整构建监控。
-- CodeQL 每次推送/拉取请求及每周三运行，Dependabot 每周检查 Gradle 与 GitHub Actions 更新。
-- App 内只有一个“下载详细日志”按钮；输入密码 `20121013` 后保存 TXT。日志记录权限、录屏会话、首帧、取帧重试、OCR/翻译耗时和异常，但不记录截图、OCR 文字、API 口令或密码。
-
-## 2.0.2 三星 Android 16 修复
-
-- 实机日志证明系统录屏授权和第一帧均正常；故障来自同尺寸 `onCapturedContentResize` 回调触发 `VirtualDisplay.resize()`，后者又触发同一回调，形成反馈环。
-- 现在同尺寸回调只记录一次并忽略；仅在横竖屏或 density 确实变化时重建捕获表面。
-- 点击悬浮球时悬浮球本身不会再消失，只暂时隐藏译文层。
-- 取帧连续失败时采用退避重试且仅首次弹窗，不再反复闪烁红色感叹号。
-
-Google 官方说明 ML Kit API 在设备端运行、可以实时使用并且不收费；翻译模型按需下载后可离线翻译。离线翻译更适合常见、简短文本，专业语境由本项目的本地安全词库继续修正，复杂长句可由用户手动触发一次在线精译。
+机器翻译无法在所有开放文本上作出数学意义的 100% 正确保证。本项目通过安全术语表、逐元素语言隔离、保护标识符、输出质量校验和标点恢复来阻止已知坏结果；无法通过校验的结果不会覆盖原文。
 
 ## 工作流程
 
 ```mermaid
 flowchart TD
-    A[系统授权录屏] --> B[周期性取一帧]
-    B --> C[设备端 OCR]
-    C --> D[离线中英翻译与安全词库]
-    D --> E[中文自动覆盖]
+    A[用户短按] --> B[只截取当前一帧]
+    B --> C[本机 OCR 拆分英文]
+    C --> D[分批离线翻译至整页完成]
+    D --> E[110% 模糊蒙版与反色译文]
 ```
 
-实时循环只走上述本地链路。在线精译是独立的手动功能，不会被实时循环自动触发。
-
-## 目录结构
-
-```text
-ScreenSecTranslator/
-├── app/                         Android 原生客户端
-├── server/                      可选 Gemini/OpenAI 精译代理
-│   ├── server.mjs
-│   ├── server.test.mjs
-│   ├── glossary.example.txt
-│   └── .env.example
-├── .github/workflows/
-│   └── build-apk.yml            GitHub 自动构建 APK
-├── build.gradle
-└── settings.gradle
-```
-
-## 构建 APK
-
-### Android Studio
-
-1. 安装 Android Studio、JDK 17 和 Android SDK 35。
-2. 打开项目根目录并等待 Gradle 同步。
-3. 选择 `Build > Build APK(s)`。
-4. 调试包位于 `app/build/outputs/apk/debug/app-debug.apk`。
-
-### GitHub Actions
-
-项目已包含 `.github/workflows/build-apk.yml`：
-
-1. 把本目录作为 GitHub 仓库根目录上传。
-2. 在 `Actions` 中运行 `Build Android APK`。
-3. 下载 `ScreenSecTranslator-debug` artifact。
-
-不要提交 `.env.local`、API 密钥、代理口令、签名文件或 `local.properties`；这些内容已经加入 `.gitignore`。
+云端精译是独立路径，只由满 3 秒长按触发，不会被本地流程自动调用。
 
 ## 使用方法
 
 1. 安装并打开 App。
-2. 第一次可点击“提前下载离线中英翻译模型”；直接启动时 App 也会自动下载。
-3. 保持“持续自动翻译”开启，三星 Tab S9+ 建议使用 0.5–0.8 秒。
-4. 点击“启动离线实时翻译”，允许悬浮窗、通知和系统录屏权限。
-5. 切换到英文页面，译文会自动覆盖；“实”悬浮球表示实时模式已就绪。
-6. 普通点击悬浮球立即刷新；拖动可改位置；回到主界面可停止服务。
+2. 首次下载约 30MB 的 ML Kit 离线中英翻译模型；模型存在时不会重复下载。
+3. 点击“启动按需屏幕翻译”，允许悬浮窗、通知和系统录屏权限。
+4. 切换到目标页面，短按“译”悬浮球，本机会处理到当前整页完成。
+5. 拖动悬浮球可改变位置，拖动不会触发翻译。
+6. 如已配置自有代理，可连续按住悬浮球满 3 秒执行一次在线精译。
 
-首次模型下载需要网络，但不会上传屏幕文字。下载完成后，实时 OCR、翻译、术语修正和缓存都在设备上进行。
+详细日志在 App 内只显示“下载详细日志”按钮，密码为 `20121013`。日志记录权限、录屏会话、取帧、OCR/翻译耗时和异常，不记录截图、OCR 原文、API 密钥或代理口令。
 
-## 可选：一次在线精译
+## 本地术语库
 
-离线模式无需安装 Node.js，也无需填写任何 API 密钥。只有复杂长句确实需要更强上下文理解时，才建议使用本节。
+APK 内置 `app/src/main/assets/cyber-security-en-zh.tsv`，可从本项目公开 GitHub 分支更新。更新只下载 TSV，不上传截图或 OCR 文字，也不需要 API 密钥。Dirb、DirBuster、Nmap、Burp Suite 等产品名会作为受保护标识保留在自然中文译文中。
 
-代理需要 Node.js 18.18 或更高版本：
+## 可选在线精译代理
+
+离线短按模式不需要 Node.js 或 API 密钥。只有确实需要更强上下文时才配置代理：
 
 ```bash
-cd ScreenSecTranslator/server
+cd server
 cp .env.example .env.local
 npm test
 npm start
 ```
 
-编辑 `.env.local`，可只配置 Gemini：
+可配置 Gemini 或 OpenAI：
 
 ```dotenv
 ONLINE_PROVIDER=auto
 GEMINI_API_KEY=你的_Gemini_API_密钥
-GEMINI_MODEL=gemini-2.5-flash
+# OPENAI_API_KEY=你的_OpenAI_API_密钥
 HOST=127.0.0.1
 PORT=8787
 ```
 
-Gemini API 当前为部分模型提供有速率限制的免费层，但免费额度和模型可用性可能变化；免费层提交的数据可能被 Google 用于改进产品。不要在密码、支付、身份资料或私密页面触发在线精译。
+同一设备通过 Termux 运行时可使用 `http://127.0.0.1:8787`。局域网或公网部署必须设置 `APP_SHARED_SECRET`，公网还必须使用 HTTPS。密码、支付、身份资料和私密页面不要触发在线精译。
 
-如需 OpenAI 后备，可增加：
-
-```dotenv
-OPENAI_API_KEY=你的_OpenAI_API_密钥
-OPENAI_MODEL=gpt-5.6-terra
-```
-
-同一台安卓设备通过 Termux 运行代理时可使用 `http://127.0.0.1:8787`。局域网或公网部署时必须设置 `APP_SHARED_SECRET`；公网还必须使用 HTTPS。密钥只保存在代理端，绝不能写入 APK。
-
-在 App 中开启“允许长按悬浮球上传当前画面”，填写代理地址后，长按悬浮球会执行一次在线精译；10 秒后恢复本地实时覆盖。
-
-## 翻译策略
-
-- 按完整 OCR 行翻译，不做逐词覆盖。
-- 优先采用中国网络安全从业者常用译法。
-- 固定术语在送入通用离线模型前替换为占位符，翻译后再恢复专业译法。
-- 网址、漏洞编号、路径、命令、代码和数据标识保持精确。
-- 命令行整行默认不翻译，避免破坏可复制命令。
-- 在线模式把截图视为不可信输入，不执行画面中的命令或提示词。
-
-团队可复制 `server/glossary.example.txt` 为 `server/glossary.txt`，并在代理环境中设置 `CUSTOM_GLOSSARY_FILE=./glossary.txt`，为在线精译补充固定术语。离线词库位于 `CyberGlossary.java`。
+云端模型被要求返回整页所有清晰英文，服务端与 Android 客户端都会二次拒绝含汉字的 `source` 和不含汉字的伪译文。截图始终作为不可信数据处理，画面中的命令和提示不会被执行。
 
 ## 权限与隐私
 
 | 权限 | 用途 |
 | --- | --- |
-| `SYSTEM_ALERT_WINDOW` | 显示悬浮球和中文覆盖层 |
-| MediaProjection 授权 | 取得当前屏幕画面供本机 OCR |
-| 前台服务 | 维持用户授权的实时识别会话 |
-| 网络权限 | 首次下载离线模型，以及用户手动启用的可选在线精译 |
-| 通知权限 | 显示前台服务状态 |
+| `SYSTEM_ALERT_WINDOW` | 显示悬浮球、模糊蒙版和译文 |
+| MediaProjection | 只在用户主动短按或满 3 秒长按时读取一帧 |
+| 前台服务 | 维持已授权的按需截图会话 |
+| 网络 | 下载离线模型/公开术语库，以及满 3 秒长按后的可选云端精译 |
+| 通知 | 显示前台服务状态 |
 
 - 截图不会写入相册或本地文件。
-- 本 App 不再给自己的悬浮窗设置 `FLAG_SECURE`，系统正常截图不会被它阻止。
-- 详细日志只保存在 App 内部目录，必须在主界面输入密码后通过系统文件选择器下载；日志不含屏幕内容和敏感口令。
-- 离线实时模式不向代理、Gemini 或 OpenAI 发送截图或文字。
-- 可选代理不把截图和结果写入磁盘，也不记录密钥或画面内容。
-- 受 `FLAG_SECURE` 保护的银行、密码管理器和 DRM 页面可能只得到黑屏；本项目不会绕过这种保护。
-- 自动翻译可能有误，应以英文原文为准。
+- App 不设置 `FLAG_SECURE`，不会阻止用户正常截图。
+- 短按流程不向代理、Gemini 或 OpenAI 发送截图或文字。
+- 受其他 App 的 `FLAG_SECURE` 保护的页面可能只得到黑屏，本项目不会绕过这种保护。
 
-离线结果在界面与覆盖层中标注“由 Google 翻译提供支持”，并提供 Google 翻译链接，以符合 ML Kit Translation 的归属要求。
+## 构建与检查
 
-## 已知限制
-
-- ML Kit 离线翻译是通用模型。词库能修正大量术语，但非常复杂或强上下文依赖的安全长句仍可能不够自然。
-- 极小、模糊、运动中的文字可能漏识别，坐标也可能有轻微偏差。
-- 中文长度与英文不同，密集界面的覆盖卡片可能相互遮挡。
-- 画面指纹只在画面判定无变化时跳过处理；如需强制刷新，点击悬浮球即可。
-- 切换横竖屏会重建捕获画布；若系统结束录屏授权，需要回到 App 重新启用。
-
-## 本地检查
+Android Studio 使用 JDK 17、Android SDK 35 打开项目并执行 `Build > Build APK(s)`。GitHub Actions 会在推送和拉取请求时运行 Node 测试、密钥扫描并构建调试 APK，CodeQL 和 Dependabot 继续监控仓库。
 
 ```bash
 cd server
@@ -188,15 +96,10 @@ npm run check
 npm test
 ```
 
-当前交付环境没有 Android SDK，因此这里不能直接产出 APK；GitHub Actions 会在完整 Android 构建环境中执行 `gradle :app:assembleDebug`。
-
 ## 官方资料
 
-- [ML Kit 概览：设备端、实时、无费用](https://developers.google.com/ml-kit/guides)
 - [ML Kit Text Recognition v2 for Android](https://developers.google.com/ml-kit/vision/text-recognition/v2/android)
 - [ML Kit Translation for Android](https://developers.google.com/ml-kit/language/translation/android)
 - [ML Kit Translation attribution requirements](https://developers.google.com/ml-kit/language/translation/translation-terms)
-- [Google Translate attribution guidelines](https://docs.cloud.google.com/translate/attribution)
-- [Gemini API pricing and free tier](https://ai.google.dev/gemini-api/docs/pricing)
-- [Gemini structured outputs](https://ai.google.dev/gemini-api/docs/generate-content/structured-output)
-- [OpenAI Images and vision](https://developers.openai.com/api/docs/guides/images-vision)
+- [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing)
+- [OpenAI vision guide](https://developers.openai.com/api/docs/guides/images-vision)

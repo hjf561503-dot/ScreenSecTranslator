@@ -60,9 +60,7 @@ public final class ScreenTranslateService extends Service {
     private static final int NOTIFICATION_ID = 7301;
     private static final int MAX_CAPTURE_RETRIES = 40;
     private static final long CAPTURE_RETRY_MS = 75L;
-    private static final int UNCHANGED_HASH_DISTANCE = 3;
-    private static final long LONG_PRESS_MS = 650L;
-    private static final long ONLINE_RESULT_HOLD_MS = 10_000L;
+    private static final long LONG_PRESS_MS = 3_000L;
     private static final String LOCAL_ATTRIBUTION = "由 Google 翻译提供支持";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -79,22 +77,16 @@ public final class ScreenTranslateService extends Service {
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
     private OfflineTranslationEngine offlineEngine;
+    private volatile Bitmap overlayFrame;
     private int captureWidth;
     private int captureHeight;
     private int captureDensity;
-    private int realtimeIntervalMs;
-    private boolean realtimeEnabled;
-    private boolean onlineRefinementEnabled;
     private boolean modelReady;
     private boolean preparingModel;
     private boolean destroyed;
-    private boolean hasFrameHash;
-    private long lastFrameHash;
-    private long suppressAutoUntil;
     private volatile boolean awaitingFrame;
     private boolean firstFrameObserved;
     private CaptureMode pendingCaptureMode;
-    private boolean pendingCaptureForce;
     private int pendingCaptureAttempt;
     private long captureRequestStartedAt;
     private int consecutiveCaptureFailures;
@@ -104,16 +96,6 @@ public final class ScreenTranslateService extends Service {
     private final Runnable frameRetry = this::acquirePendingFrame;
     private final Runnable configurationResize = this::resizeCaptureSurfaceFromMetrics;
 
-    private final Runnable realtimeTick = () -> {
-        if (destroyed || !realtimeEnabled) return;
-        long now = System.currentTimeMillis();
-        if (now < suppressAutoUntil || now < captureBackoffUntil || busy.get()) {
-            scheduleNextRealtime();
-            return;
-        }
-        requestLocalTranslation(false, false);
-    };
-
     private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
         @Override
         public void onStop() {
@@ -121,7 +103,7 @@ public final class ScreenTranslateService extends Service {
             AppLog.warn(ScreenTranslateService.this, "CAPTURE", "PROJECTION_STOPPED",
                     "system_callback=true");
             mainHandler.post(() -> {
-                toast("录屏授权已结束，实时翻译已停止");
+                toast("录屏授权已结束，按需翻译已停止");
                 stopSelf();
             });
         }
@@ -167,7 +149,6 @@ public final class ScreenTranslateService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        loadSettings();
         startForegroundForProjection();
         if (!Settings.canDrawOverlays(this)) {
             AppLog.warn(this, "SERVICE", "START_REJECTED", "reason=overlay_permission_missing");
@@ -187,20 +168,8 @@ public final class ScreenTranslateService extends Service {
         }
         beginProjection(resultCode, resultData);
         prepareOfflineModel();
-        AppLog.info(this, "SERVICE", "STARTED",
-                "realtime=" + realtimeEnabled + " interval_ms=" + realtimeIntervalMs
-                        + " online_refinement=" + onlineRefinementEnabled);
+        AppLog.info(this, "SERVICE", "STARTED", "mode=on_demand");
         return START_NOT_STICKY;
-    }
-
-    private void loadSettings() {
-        SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
-        realtimeEnabled = prefs.getBoolean(MainActivity.KEY_REALTIME_ENABLED, true);
-        onlineRefinementEnabled = prefs.getBoolean(MainActivity.KEY_ONLINE_REFINEMENT, false);
-        realtimeIntervalMs = clamp(
-                prefs.getInt(MainActivity.KEY_REALTIME_INTERVAL_MS, 600),
-                MainActivity.MIN_INTERVAL_MS,
-                MainActivity.MAX_INTERVAL_MS);
     }
 
     private void prepareOfflineModel() {
@@ -215,12 +184,8 @@ public final class ScreenTranslateService extends Service {
                     preparingModel = false;
                     modelReady = true;
                     AppLog.info(ScreenTranslateService.this, "MODEL", "READY", "offline=true");
-                    setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
+                    setBubbleState("译", Color.rgb(77, 225, 193));
                     toast("离线翻译模型已就绪");
-                    if (realtimeEnabled) {
-                        mainHandler.removeCallbacks(realtimeTick);
-                        mainHandler.postDelayed(realtimeTick, 250);
-                    }
                 });
             }
 
@@ -243,12 +208,10 @@ public final class ScreenTranslateService extends Service {
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this, 0, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        String detail = realtimeEnabled
-                ? "本机自动识别并翻译；画面不会上传"
-                : "点击悬浮球，在本机识别并翻译";
+        String detail = "短按本机翻译整页；按住 3 秒尝试云端精译";
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_menu_view)
-                .setContentTitle("屏译离线实时模式")
+                .setContentTitle("屏译按需翻译模式")
                 .setContentText(detail)
                 .setContentIntent(pendingIntent)
                 .setOngoing(true)
@@ -265,7 +228,7 @@ public final class ScreenTranslateService extends Service {
     private void createNotificationChannel() {
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "离线实时屏幕翻译",
+                "按需屏幕翻译",
                 NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("维持由用户授权的本机屏幕识别会话");
         getSystemService(NotificationManager.class).createNotificationChannel(channel);
@@ -358,7 +321,6 @@ public final class ScreenTranslateService extends Service {
         busy.set(false);
         awaitingFrame = false;
         captureHandler.removeCallbacks(frameRetry);
-        hasFrameHash = false;
         if (offlineEngine != null) offlineEngine.clearPage();
         firstFrameObserved = false;
         removeTranslationOverlay();
@@ -377,7 +339,6 @@ public final class ScreenTranslateService extends Service {
         AppLog.info(this, "CAPTURE", "SURFACE_RESIZED",
                 "width=" + captureWidth + " height=" + captureHeight
                         + " density=" + captureDensity);
-        scheduleNextRealtime();
     }
 
     private void updateCaptureSize() {
@@ -403,7 +364,7 @@ public final class ScreenTranslateService extends Service {
         bubbleView.setTextColor(Color.rgb(5, 28, 24));
         bubbleView.setGravity(Gravity.CENTER);
         bubbleView.setElevation(dp(10));
-        bubbleView.setContentDescription("点击立即离线翻译；长按可选在线精译；拖动改变位置");
+        bubbleView.setContentDescription("短按本地翻译整页；按住三秒在线精译；拖动改变位置");
         bubbleView.setBackground(circle(Color.rgb(255, 202, 92), Color.WHITE));
 
         bubbleParams = new WindowManager.LayoutParams(
@@ -430,8 +391,15 @@ public final class ScreenTranslateService extends Service {
         private float downRawY;
         private int startX;
         private int startY;
-        private long downAt;
         private boolean moved;
+        private boolean longPressTriggered;
+        private final Runnable triggerLongPress = () -> {
+            if (moved || longPressTriggered) return;
+            longPressTriggered = true;
+            AppLog.info(ScreenTranslateService.this, "BUBBLE", "LONG_PRESS_TRIGGERED",
+                    "threshold_ms=" + LONG_PRESS_MS);
+            requestOnlineRefinement();
+        };
 
         @Override
         public boolean onTouch(View view, MotionEvent event) {
@@ -441,13 +409,18 @@ public final class ScreenTranslateService extends Service {
                     downRawY = event.getRawY();
                     startX = bubbleParams.x;
                     startY = bubbleParams.y;
-                    downAt = event.getEventTime();
                     moved = false;
+                    longPressTriggered = false;
+                    mainHandler.removeCallbacks(triggerLongPress);
+                    mainHandler.postDelayed(triggerLongPress, LONG_PRESS_MS);
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     float dx = event.getRawX() - downRawX;
                     float dy = event.getRawY() - downRawY;
-                    if (Math.hypot(dx, dy) > dp(8)) moved = true;
+                    if (Math.hypot(dx, dy) > dp(8)) {
+                        moved = true;
+                        mainHandler.removeCallbacks(triggerLongPress);
+                    }
                     bubbleParams.x = clamp(startX + Math.round(dx), 0,
                             Math.max(0, captureWidth - bubbleParams.width));
                     bubbleParams.y = clamp(startY + Math.round(dy), 0,
@@ -458,20 +431,15 @@ public final class ScreenTranslateService extends Service {
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (!moved && event.getActionMasked() == MotionEvent.ACTION_UP) {
-                        long held = event.getEventTime() - downAt;
-                        if (held >= LONG_PRESS_MS) {
-                            AppLog.info(ScreenTranslateService.this, "BUBBLE", "LONG_PRESSED",
-                                    "online_refinement=" + onlineRefinementEnabled);
-                            if (onlineRefinementEnabled) requestOnlineRefinement();
-                            else toast("在线精译未开启；实时翻译不会调用 API");
-                        } else {
-                            AppLog.info(ScreenTranslateService.this, "BUBBLE", "TAPPED",
-                                    "model_ready=" + modelReady + " busy=" + busy.get());
-                            requestLocalTranslation(true, true);
-                        }
+                    mainHandler.removeCallbacks(triggerLongPress);
+                    if (!moved && !longPressTriggered) {
+                        AppLog.info(ScreenTranslateService.this, "BUBBLE", "TAPPED",
+                                "model_ready=" + modelReady + " busy=" + busy.get());
+                        requestLocalTranslation();
                     }
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    mainHandler.removeCallbacks(triggerLongPress);
                     return true;
                 default:
                     return false;
@@ -479,27 +447,25 @@ public final class ScreenTranslateService extends Service {
         }
     }
 
-    private void requestLocalTranslation(boolean force, boolean userInitiated) {
+    private void requestLocalTranslation() {
         if (destroyed || mediaProjection == null || imageReader == null) {
-            if (userInitiated) toast("录屏会话尚未就绪");
+            toast("录屏会话尚未就绪");
             return;
         }
         if (!modelReady) {
             prepareOfflineModel();
-            if (userInitiated) toast("正在准备离线翻译模型");
+            toast("正在准备离线翻译模型");
             return;
         }
         if (!busy.compareAndSet(false, true)) {
-            if (userInitiated) toast("正在处理上一帧画面");
+            toast("正在处理当前页面，请稍候");
             return;
         }
-        mainHandler.removeCallbacks(realtimeTick);
         setBubbleState("…", Color.rgb(255, 202, 92));
         hideOverlayForCapture();
-        AppLog.info(this, "CAPTURE", "REQUESTED",
-                "mode=local force=" + force + " user=" + userInitiated);
+        AppLog.info(this, "CAPTURE", "REQUESTED", "mode=local user=true");
         captureHandler.postDelayed(
-                () -> beginFrameAcquire(CaptureMode.LOCAL, force), 55);
+                () -> beginFrameAcquire(CaptureMode.LOCAL), 55);
     }
 
     private void requestOnlineRefinement() {
@@ -511,12 +477,11 @@ public final class ScreenTranslateService extends Service {
             toast("正在处理上一帧画面");
             return;
         }
-        mainHandler.removeCallbacks(realtimeTick);
         setBubbleState("AI", Color.rgb(126, 173, 255));
         hideOverlayForCapture();
         AppLog.info(this, "CAPTURE", "REQUESTED", "mode=online force=true user=true");
         captureHandler.postDelayed(
-                () -> beginFrameAcquire(CaptureMode.ONLINE, true), 55);
+                () -> beginFrameAcquire(CaptureMode.ONLINE), 55);
     }
 
     private void hideOverlayForCapture() {
@@ -529,9 +494,8 @@ public final class ScreenTranslateService extends Service {
         });
     }
 
-    private void beginFrameAcquire(CaptureMode mode, boolean force) {
+    private void beginFrameAcquire(CaptureMode mode) {
         pendingCaptureMode = mode;
-        pendingCaptureForce = force;
         pendingCaptureAttempt = 0;
         captureRequestStartedAt = SystemClock.elapsedRealtime();
         awaitingFrame = true;
@@ -587,7 +551,6 @@ public final class ScreenTranslateService extends Service {
         consecutiveCaptureFailures = 0;
         captureBackoffUntil = 0L;
         CaptureMode mode = pendingCaptureMode;
-        boolean force = pendingCaptureForce;
 
         Bitmap bitmap;
         try {
@@ -614,27 +577,6 @@ public final class ScreenTranslateService extends Service {
             return;
         }
 
-        long fingerprint = FrameFingerprint.differenceHash(bitmap);
-        int hashDistance = hasFrameHash
-                ? FrameFingerprint.distance(lastFrameHash, fingerprint)
-                : Integer.MAX_VALUE;
-        boolean unchanged = hasFrameHash && hashDistance <= UNCHANGED_HASH_DISTANCE;
-        if (unchanged && offlineEngine.hasPendingPageWork()) {
-            bitmap.recycle();
-            AppLog.info(this, "CAPTURE", "UNCHANGED_PROGRESSIVE_CONTINUE",
-                    "hash_distance=" + hashDistance);
-            continueStaticPage();
-            return;
-        }
-        if (!force && unchanged) {
-            bitmap.recycle();
-            AppLog.info(this, "CAPTURE", "UNCHANGED_PAGE_COMPLETE",
-                    "hash_distance=" + hashDistance);
-            mainHandler.post(this::finishWithoutVisualChange);
-            return;
-        }
-        lastFrameHash = fingerprint;
-        hasFrameHash = true;
         translateNewLocalPage(bitmap);
     }
 
@@ -642,40 +584,56 @@ public final class ScreenTranslateService extends Service {
         offlineEngine.translateNewPage(bitmap, new OfflineTranslationEngine.TranslationCallback() {
             @Override
             public void onSuccess(OfflineTranslationEngine.PageProgress progress) {
-                bitmap.recycle();
-                showLocalProgress(progress);
+                showLocalProgress(progress, bitmap);
             }
 
             @Override
             public void onFailure(Exception error) {
-                bitmap.recycle();
+                recycleIfUnowned(bitmap);
                 fail("离线识别失败：" + safeMessage(error));
             }
         });
     }
 
-    private void continueStaticPage() {
+    private void continueStaticPage(Bitmap bitmap) {
         offlineEngine.continuePage(new OfflineTranslationEngine.TranslationCallback() {
             @Override
             public void onSuccess(OfflineTranslationEngine.PageProgress progress) {
-                showLocalProgress(progress);
+                showLocalProgress(progress, bitmap);
             }
 
             @Override
             public void onFailure(Exception error) {
-                fail("继续翻译静态页面失败：" + safeMessage(error));
+                recycleIfUnowned(bitmap);
+                fail("继续翻译当前页面失败：" + safeMessage(error));
             }
         });
     }
 
-    private void showLocalProgress(OfflineTranslationEngine.PageProgress progress) {
+    private void showLocalProgress(OfflineTranslationEngine.PageProgress progress, Bitmap bitmap) {
         mainHandler.post(() -> {
-            if (destroyed) return;
-            updateTranslationOverlay(progress.translations, LOCAL_ATTRIBUTION);
+            if (destroyed) {
+                recycleIfUnowned(bitmap);
+                return;
+            }
+            if (!progress.translations.isEmpty()) {
+                updateTranslationOverlay(progress.translations, LOCAL_ATTRIBUTION, bitmap);
+            }
             AppLog.info(this, "TRANSLATE", "PAGE_PROGRESS_SHOWN",
                     "processed=" + progress.processedLines + " total=" + progress.totalLines
                             + " visible=" + progress.translations.size()
                             + " complete=" + progress.complete);
+            if (!progress.complete) {
+                setBubbleState(progress.processedLines + "/" + progress.totalLines,
+                        Color.rgb(255, 202, 92));
+                continueStaticPage(bitmap);
+                return;
+            }
+            if (progress.translations.isEmpty()) {
+                recycleIfUnowned(bitmap);
+                removeTranslationOverlay();
+                toast("当前页面没有可翻译的纯英文文字");
+            }
             finishRequest();
         });
     }
@@ -700,16 +658,20 @@ public final class ScreenTranslateService extends Service {
     }
 
     private void encodeAndSendOnline(Bitmap bitmap) {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output);
-        bitmap.recycle();
-        String base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
-        int width = captureWidth;
-        int height = captureHeight;
-        networkExecutor.execute(() -> translateWithProxy(base64, width, height));
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output);
+            String base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+            networkExecutor.execute(() -> translateWithProxy(base64, width, height, bitmap));
+        } catch (RuntimeException error) {
+            recycleIfUnowned(bitmap);
+            fail("准备在线精译画面失败：" + safeMessage(error));
+        }
     }
 
-    private void translateWithProxy(String base64, int width, int height) {
+    private void translateWithProxy(String base64, int width, int height, Bitmap bitmap) {
         SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE);
         String proxyUrl = prefs.getString(MainActivity.KEY_PROXY_URL, "http://127.0.0.1:8787");
         String token = prefs.getString(MainActivity.KEY_PROXY_TOKEN, "");
@@ -751,22 +713,32 @@ public final class ScreenTranslateService extends Service {
             if (array != null) {
                 for (int i = 0; i < array.length(); i++) {
                     ScreenTranslation item = ScreenTranslation.fromJson(array.optJSONObject(i));
-                    if (item != null) translations.add(item);
+                    if (item == null || CyberGlossary.containsHan(item.source)
+                            || !CyberGlossary.containsEnglish(item.source)) continue;
+                    String translated = CyberGlossary.sanitizeTranslation(
+                            item.source, item.translated);
+                    ScreenTranslation safe = ScreenTranslation.of(
+                            item.source, translated, item.x, item.y, item.width, item.height);
+                    if (safe != null) translations.add(safe);
                 }
             }
             String provider = response.optString("provider", "AI");
             mainHandler.post(() -> {
-                if (destroyed) return;
-                suppressAutoUntil = System.currentTimeMillis() + ONLINE_RESULT_HOLD_MS;
+                if (destroyed) {
+                    recycleIfUnowned(bitmap);
+                    return;
+                }
                 if (translations.isEmpty()) {
+                    recycleIfUnowned(bitmap);
                     toast("在线精译没有识别到英文");
                 } else {
-                    updateTranslationOverlay(translations, onlineAttribution(provider));
-                    toast("在线精译完成；10 秒后恢复离线自动翻译");
+                    updateTranslationOverlay(translations, onlineAttribution(provider), bitmap);
+                    toast("在线精译完成");
                 }
                 finishRequest();
             });
         } catch (Exception error) {
+            recycleIfUnowned(bitmap);
             fail("在线精译失败：" + safeMessage(error));
         } finally {
             if (connection != null) connection.disconnect();
@@ -780,9 +752,11 @@ public final class ScreenTranslateService extends Service {
         return "AI 在线精译";
     }
 
-    private void updateTranslationOverlay(List<ScreenTranslation> translations, String attribution) {
+    private void updateTranslationOverlay(List<ScreenTranslation> translations, String attribution,
+                                          Bitmap bitmap) {
         if (translations == null || translations.isEmpty()) {
             removeTranslationOverlay();
+            recycleIfUnowned(bitmap);
             return;
         }
         try {
@@ -806,7 +780,12 @@ public final class ScreenTranslateService extends Service {
                 translationOverlay = candidate;
             }
             translationOverlay.setVisibility(View.VISIBLE);
-            translationOverlay.setTranslations(translations, attribution);
+            Bitmap previous = overlayFrame;
+            overlayFrame = bitmap;
+            translationOverlay.setTranslations(translations, attribution, bitmap);
+            if (previous != null && previous != bitmap && !previous.isRecycled()) {
+                previous.recycle();
+            }
             AppLog.info(this, "OVERLAY", "UPDATED",
                     "translations=" + translations.size() + " attribution=" + attribution);
         } catch (RuntimeException error) {
@@ -818,36 +797,25 @@ public final class ScreenTranslateService extends Service {
     }
 
     private void removeTranslationOverlay() {
-        if (translationOverlay == null) return;
-        try {
-            windowManager.removeView(translationOverlay);
-        } catch (IllegalArgumentException ignored) {
+        if (translationOverlay != null) {
+            try {
+                windowManager.removeView(translationOverlay);
+            } catch (IllegalArgumentException ignored) {
+            }
+            translationOverlay = null;
         }
-        translationOverlay = null;
+        Bitmap previous = overlayFrame;
+        overlayFrame = null;
+        if (previous != null && !previous.isRecycled()) previous.recycle();
     }
 
-    private void finishWithoutVisualChange() {
-        if (destroyed) return;
-        busy.set(false);
-        setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
-        scheduleNextRealtime();
+    private void recycleIfUnowned(Bitmap bitmap) {
+        if (bitmap != null && bitmap != overlayFrame && !bitmap.isRecycled()) bitmap.recycle();
     }
 
     private void finishRequest() {
         busy.set(false);
-        setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
-        scheduleNextRealtime();
-    }
-
-    private void scheduleNextRealtime() {
-        mainHandler.removeCallbacks(realtimeTick);
-        if (destroyed || !realtimeEnabled || !modelReady) return;
-        long delay = realtimeIntervalMs;
-        long hold = suppressAutoUntil - System.currentTimeMillis();
-        if (hold > delay) delay = hold;
-        long captureHold = captureBackoffUntil - System.currentTimeMillis();
-        if (captureHold > delay) delay = captureHold;
-        mainHandler.postDelayed(realtimeTick, Math.max(100L, delay));
+        setBubbleState("译", Color.rgb(77, 225, 193));
     }
 
     private void setBubbleState(String label, int color) {
@@ -875,12 +843,10 @@ public final class ScreenTranslateService extends Service {
                 setBubbleState("!", Color.rgb(255, 108, 108));
                 toast(message);
                 mainHandler.postDelayed(() -> {
-                    setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
-                    scheduleNextRealtime();
+                    setBubbleState("译", Color.rgb(77, 225, 193));
                 }, 1600);
             } else {
-                setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
-                scheduleNextRealtime();
+                setBubbleState("译", Color.rgb(77, 225, 193));
             }
         });
     }

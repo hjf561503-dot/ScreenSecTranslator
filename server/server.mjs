@@ -30,11 +30,15 @@ Security boundary:
 
 Translation requirements:
 - Find every clearly legible English user-interface label, heading, sentence, explanatory message, alert, and security-tool description.
+- Do not omit a legible English region because the page is long. Continue until all visible English on the full screenshot has been returned.
+- Never translate Chinese/Han text. If a visual line mixes Chinese and English, return only a tightly bounded English-only region; never include any Han character in source.
 - Translate by meaning and local context into concise, natural Simplified Chinese. Never translate word by word when a professional Chinese security practitioner would phrase it differently.
 - Use established cybersecurity terminology. Examples: vulnerability=漏洞, exploit=漏洞利用, payload=载荷, privilege escalation=权限提升, reverse shell=反向 Shell, lateral movement=横向移动, persistence=持久化, credential dumping=凭据转储, command and control=命令与控制（C2）, indicator of compromise=失陷指标（IOC）, proof of concept=概念验证（PoC）, obfuscation=混淆, deobfuscation=去混淆.
 - Preserve product names, usernames, domains, URLs, IP addresses, ports, hashes, CVE identifiers, file paths, registry paths, API names, flags, exact commands, source code, and protocol abbreviations. Add a short Chinese explanation around a preserved acronym only when it improves understanding.
 - Do not translate isolated code tokens or data that should remain exact. Translate meaningful English comments, alerts, and prose around them.
 - Keep each coherent sentence or UI control as one item. Do not split a sentence into word-sized boxes. Do not merge unrelated controls.
+- Preserve the source sentence-punctuation sequence exactly, including commas, periods, colons, semicolons, question marks, exclamation marks, and their order. Preserve punctuation inside URLs, IP addresses, commands, versions, and identifiers verbatim.
+- Every translated value must contain natural Simplified Chinese; never return the English source unchanged as its translation.
 - If no English needs translation, return an empty translations array.
 
 Localization requirements:
@@ -49,7 +53,7 @@ const TRANSLATION_SCHEMA = {
   properties: {
     translations: {
       type: "array",
-      maxItems: 120,
+      maxItems: 500,
       items: {
         type: "object",
         properties: {
@@ -97,7 +101,7 @@ export function buildOpenAIRequest(imageBase64, width, height, model = OPENAI_MO
         schema: TRANSLATION_SCHEMA
       }
     },
-    max_output_tokens: 12000
+    max_output_tokens: 30000
   };
 }
 
@@ -128,7 +132,7 @@ export function buildGeminiRequest(imageBase64, width, height) {
         }
       },
       temperature: 0.1,
-      maxOutputTokens: 12000
+      maxOutputTokens: 30000
     }
   };
 }
@@ -163,15 +167,19 @@ export function normalizeTranslationPayload(value) {
     throw new Error("模型返回的数据结构无效");
   }
   const translations = [];
-  for (const raw of value.translations.slice(0, 120)) {
+  for (const raw of value.translations.slice(0, 500)) {
     if (!raw || typeof raw.translated !== "string" || !raw.translated.trim()) continue;
+    const source = typeof raw.source === "string" ? raw.source.trim().slice(0, 2000) : "";
+    if (!/[A-Za-z]{2,}/.test(source) || /\p{Script=Han}/u.test(source)) continue;
+    const translated = raw.translated.trim().slice(0, 2000);
+    if (!/\p{Script=Han}/u.test(translated)) continue;
     const x = clampInteger(raw.x, 0, 999);
     const y = clampInteger(raw.y, 0, 999);
     const width = clampInteger(raw.width, 1, 1000 - x);
     const height = clampInteger(raw.height, 1, 1000 - y);
     translations.push({
-      source: typeof raw.source === "string" ? raw.source.trim().slice(0, 2000) : "",
-      translated: raw.translated.trim().slice(0, 2000),
+      source,
+      translated,
       x,
       y,
       width,

@@ -40,10 +40,10 @@ final class CyberGlossary {
     private static final Pattern TECH_TOKEN = Pattern.compile(
             "(?i)(?<![A-Za-z0-9])(?:API|CLI|CVE|DNS|EDR|HTTP|HTTPS|IOC|IP|MFA|RCE|SIEM|"
                     + "SOC|SQL|SSH|SSL|SSRF|TCP|TLS|UDP|URL|XSS|YARA)(?![A-Za-z0-9])");
-    private static final Pattern COMMAND_PREFIX = Pattern.compile(
-            "(?i)^\\s*(?:[$>#]\\s*)?(?:adb|am|apt|bash|cat|chmod|curl|docker|git|grep|java|jq|kubectl|"
-                    + "dirb|ffuf|gobuster|hydra|msfconsole|netcat|nc|nikto|nmap|node|npm|nuclei|"
-                    + "pip|powershell|python|reg|sed|sh|sqlmap|ssh|sudo|systemctl|wget|wfuzz)\\b");
+    private static final Pattern HAN = Pattern.compile("[\\p{IsHan}]");
+    private static final Pattern INTERNAL_MARKER = Pattern.compile(
+            "(?i)(?:ZZX|XZZ|QSEG\\d{0,3}|ZX\\d{3}[A-Z]*)");
+    private static final String SENTENCE_PUNCTUATION = ",.!?;:，。！？；：";
 
     static {
         term("command and control", "命令与控制（C2）");
@@ -204,7 +204,6 @@ final class CyberGlossary {
         String text = source.trim();
         if (text.length() < 2 || !ENGLISH.matcher(text).find()) return false;
         if (externalKeep.contains(normalize(text))) return false;
-        if (COMMAND_PREFIX.matcher(text).find()) return false;
         int letters = 0;
         int symbols = 0;
         for (int i = 0; i < text.length(); i++) {
@@ -236,6 +235,26 @@ final class CyberGlossary {
                 .replaceAll("([A-Za-z0-9])([\\p{IsHan}])", "$1 $2")
                 .replaceAll(" {2,}", " ")
                 .trim();
+        return output;
+    }
+
+    static boolean containsHan(String value) {
+        return value != null && HAN.matcher(value).find();
+    }
+
+    static boolean containsEnglish(String value) {
+        return value != null && ENGLISH.matcher(value).find();
+    }
+
+    static String sanitizeTranslation(String source, String raw) {
+        if (source == null || containsHan(source) || !containsEnglish(source)) return null;
+        String output = polishTranslation(source, raw);
+        if (output.isEmpty()) return null;
+        output = restoreSourcePunctuation(source, output);
+        if (INTERNAL_MARKER.matcher(output).find()) return null;
+        if (!containsHan(output)) return null;
+        if (normalizeForQuality(source).equals(normalizeForQuality(output))) return null;
+        if (!protectedTokensPreserved(source, output)) return null;
         return output;
     }
 
@@ -348,12 +367,114 @@ final class CyberGlossary {
         }
     }
 
+    private static String restoreSourcePunctuation(String source, String translated) {
+        List<PunctuationMark> marks = collectSentencePunctuation(source);
+        String withoutGeneratedMarks = removeSentencePunctuation(translated);
+        if (marks.isEmpty()) return withoutGeneratedMarks.trim();
+        int logicalLength = Math.max(1, withoutGeneratedMarks.length());
+        StringBuilder restored = new StringBuilder(withoutGeneratedMarks);
+        int inserted = 0;
+        for (PunctuationMark mark : marks) {
+            int position = Math.max(0, Math.min(restored.length(),
+                    Math.round(mark.ratio * logicalLength) + inserted));
+            restored.insert(position, mark.value);
+            inserted++;
+            if (mark.spaceAfter && position + 1 < restored.length()
+                    && !Character.isWhitespace(restored.charAt(position + 1))) {
+                restored.insert(position + 1, ' ');
+                inserted++;
+            }
+        }
+        return restored.toString().replaceAll("\\s+", " ").trim();
+    }
+
+    private static List<PunctuationMark> collectSentencePunctuation(String value) {
+        List<PunctuationMark> marks = new ArrayList<>();
+        if (value == null || value.isEmpty()) return marks;
+        boolean[] protectedChars = protectedCharacters(value);
+        int logicalLength = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (!isSentencePunctuation(current) || protectedChars[i]
+                    || isEmbeddedDataPunctuation(value, i)) {
+                logicalLength++;
+            }
+        }
+        int seen = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (isSentencePunctuation(current) && !protectedChars[i]
+                    && !isEmbeddedDataPunctuation(value, i)) {
+                boolean spaceAfter = i + 1 < value.length()
+                        && Character.isWhitespace(value.charAt(i + 1));
+                marks.add(new PunctuationMark(current,
+                        seen / (float) Math.max(1, logicalLength), spaceAfter));
+            } else {
+                seen++;
+            }
+        }
+        return marks;
+    }
+
+    private static String removeSentencePunctuation(String value) {
+        if (value == null || value.isEmpty()) return "";
+        boolean[] protectedChars = protectedCharacters(value);
+        StringBuilder output = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (isSentencePunctuation(current) && !protectedChars[i]
+                    && !isEmbeddedDataPunctuation(value, i)) continue;
+            output.append(current);
+        }
+        return output.toString();
+    }
+
+    private static boolean[] protectedCharacters(String value) {
+        boolean[] protectedChars = new boolean[value.length()];
+        Matcher matcher = PROTECTED_DATA.matcher(value);
+        while (matcher.find()) {
+            for (int i = matcher.start(); i < matcher.end() && i < protectedChars.length; i++) {
+                protectedChars[i] = true;
+            }
+        }
+        return protectedChars;
+    }
+
+    private static boolean isSentencePunctuation(char value) {
+        return SENTENCE_PUNCTUATION.indexOf(value) >= 0;
+    }
+
+    private static boolean isEmbeddedDataPunctuation(String value, int index) {
+        if (index <= 0 || index + 1 >= value.length()) return false;
+        char punctuation = value.charAt(index);
+        if (punctuation != '.' && punctuation != ':' && punctuation != ',') return false;
+        return Character.isLetterOrDigit(value.charAt(index - 1))
+                && Character.isLetterOrDigit(value.charAt(index + 1));
+    }
+
+    private static String normalizeForQuality(String value) {
+        return value == null ? "" : value.replaceAll("[\\s\\p{Punct}]", "")
+                .toLowerCase(Locale.ROOT);
+    }
+
     private static void term(String source, String target) {
         TERMS.put(source.toLowerCase(Locale.ROOT), target);
     }
 
     private static void exact(String source, String target) {
         EXACT.put(source.toLowerCase(Locale.ROOT), target);
+    }
+
+    private static final class PunctuationMark {
+        final char value;
+        final float ratio;
+        final boolean spaceAfter;
+
+        PunctuationMark(char value, float ratio, boolean spaceAfter) {
+            this.value = value;
+            this.ratio = ratio;
+            this.spaceAfter = spaceAfter;
+        }
     }
 
     static final class DictionarySummary {

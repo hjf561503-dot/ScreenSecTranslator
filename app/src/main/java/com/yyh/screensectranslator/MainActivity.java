@@ -20,11 +20,9 @@ import android.text.method.PasswordTransformationMethod;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -41,14 +39,6 @@ public final class MainActivity extends Activity {
     static final String PREFS = "screen_sec_settings";
     static final String KEY_PROXY_URL = "proxy_url";
     static final String KEY_PROXY_TOKEN = "proxy_token";
-    static final String KEY_REALTIME_ENABLED = "realtime_enabled";
-    static final String KEY_REALTIME_INTERVAL_MS = "realtime_interval_ms";
-    static final String KEY_ONLINE_REFINEMENT = "online_refinement";
-    private static final String KEY_SPEED_MIGRATED_V201 = "speed_migrated_v201";
-
-    static final int MIN_INTERVAL_MS = 300;
-    static final int MAX_INTERVAL_MS = 2000;
-
     private static final int REQ_OVERLAY = 1001;
     private static final int REQ_CAPTURE = 1002;
     private static final int REQ_NOTIFICATIONS = 1003;
@@ -62,10 +52,6 @@ public final class MainActivity extends Activity {
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private EditText proxyUrlInput;
     private EditText tokenInput;
-    private CheckBox realtimeInput;
-    private CheckBox onlineRefinementInput;
-    private SeekBar intervalInput;
-    private TextView intervalLabel;
     private TextView statusText;
     private TextView modelStatusText;
     private Button modelButton;
@@ -78,7 +64,6 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         AppLog.appStarted(this);
-        migrateSpeedDefault();
         setContentView(buildUi());
         CyberGlossary.loadDictionaries(this);
         refreshOfflineModelStatus();
@@ -88,18 +73,6 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshOfflineModelStatus();
-    }
-
-    private void migrateSpeedDefault() {
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (prefs.getBoolean(KEY_SPEED_MIGRATED_V201, false)) return;
-        int previous = prefs.getInt(KEY_REALTIME_INTERVAL_MS, 1200);
-        SharedPreferences.Editor editor = prefs.edit()
-                .putBoolean(KEY_SPEED_MIGRATED_V201, true);
-        if (previous == 1200) editor.putInt(KEY_REALTIME_INTERVAL_MS, 600);
-        editor.apply();
-        AppLog.info(this, "SETTINGS", "SPEED_DEFAULT_MIGRATED",
-                "previous_ms=" + previous + " current_ms=" + (previous == 1200 ? 600 : previous));
     }
 
     private View buildUi() {
@@ -116,16 +89,16 @@ public final class MainActivity extends Activity {
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
 
-        TextView eyebrow = text("OFFLINE REAL-TIME TRANSLATOR", 12, Color.rgb(77, 225, 193));
+        TextView eyebrow = text("ON-DEMAND SCREEN TRANSLATOR", 12, Color.rgb(77, 225, 193));
         eyebrow.setLetterSpacing(0.12f);
         root.addView(eyebrow);
 
-        TextView title = text("屏译·安全术语版 2.0.4", 30, Color.WHITE);
+        TextView title = text("屏译·安全术语版 2.1.0", 30, Color.WHITE);
         title.setPadding(0, dp(8), 0, dp(8));
         root.addView(title);
 
         TextView intro = text(
-                "启动后自动识别屏幕中的英文、离线翻译并覆盖到原文附近。实时循环不上传截图，也不消耗任何 API 额度；网络安全术语会经过本地专业词库修正。",
+                "不再后台自动扫描。短按悬浮球会在本机一次扫完整个当前页面，只翻译纯英文区域；按住满 3 秒才会尝试调用你配置的云端代理。",
                 15,
                 Color.rgb(188, 199, 216));
         intro.setLineSpacing(dp(4), 1f);
@@ -137,43 +110,14 @@ public final class MainActivity extends Activity {
         statusText.setBackground(rounded(Color.rgb(27, 35, 49), dp(12), Color.rgb(55, 67, 84)));
         root.addView(statusText, fullWidth(dp(20)));
 
-        root.addView(sectionTitle("离线实时翻译"), fullWidth(dp(22)));
+        root.addView(sectionTitle("按需离线翻译"), fullWidth(dp(22)));
 
-        realtimeInput = checkBox("启动后持续自动翻译（推荐）");
-        realtimeInput.setChecked(prefs.getBoolean(KEY_REALTIME_ENABLED, true));
-        root.addView(realtimeInput, fullWidth(dp(8)));
-
-        intervalLabel = text("刷新间隔", 14, Color.rgb(188, 199, 216));
-        root.addView(intervalLabel, fullWidth(dp(12)));
-        intervalInput = new SeekBar(this);
-        intervalInput.setMax((MAX_INTERVAL_MS - MIN_INTERVAL_MS) / 100);
-        int storedInterval = clamp(
-                prefs.getInt(KEY_REALTIME_INTERVAL_MS, 600),
-                MIN_INTERVAL_MS,
-                MAX_INTERVAL_MS);
-        intervalInput.setProgress((storedInterval - MIN_INTERVAL_MS) / 100);
-        updateIntervalLabel(storedInterval);
-        intervalInput.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                updateIntervalLabel(MIN_INTERVAL_MS + progress * 100);
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
-            }
-        });
-        root.addView(intervalInput, fullWidth(dp(4)));
-
-        TextView speedTip = text(
-                "三星 Tab S9+ 建议使用 0.5–0.8 秒。画面不变时会自动跳过 OCR 和翻译；处理尚未结束时不会重复启动任务。",
+        TextView localTip = text(
+                "短按一次只截取一帧，然后在这张画面内分批识别并翻译全部可辨认英文，直到整页完成。不会把中文片段送入翻译器，也不会在后台重复截图。",
                 13,
                 Color.rgb(151, 165, 185));
-        root.addView(speedTip, fullWidth(dp(4)));
+        localTip.setLineSpacing(dp(3), 1f);
+        root.addView(localTip, fullWidth(dp(8)));
 
         modelButton = secondaryButton("检查离线中英翻译模型状态");
         modelButton.setOnClickListener(v -> downloadOfflineModel());
@@ -201,13 +145,10 @@ public final class MainActivity extends Activity {
         dictionaryButton.setOnClickListener(v -> updateFreeDictionary(dictionaryButton));
         root.addView(dictionaryButton, fullWidth(dp(8)));
 
-        root.addView(sectionTitle("在线 AI 精译（可选，默认关闭）"), fullWidth(dp(22)));
-        onlineRefinementInput = checkBox("允许长按悬浮球上传当前画面进行一次精译");
-        onlineRefinementInput.setChecked(prefs.getBoolean(KEY_ONLINE_REFINEMENT, false));
-        root.addView(onlineRefinementInput, fullWidth(dp(8)));
+        root.addView(sectionTitle("按住 3 秒在线精译（可选）"), fullWidth(dp(22)));
 
         TextView onlineTip = text(
-                "实时自动翻译永远只走本机。开启此项后，也只有长按悬浮球才会调用你自己的代理；普通点击仍是离线刷新。代理可优先配置 Gemini 免费层，免费额度并非永久或无限。",
+                "只有手指在悬浮球上保持满 3 秒、且没有拖动时，才会截取当前画面并尝试调用你自己的代理；普通短按永远只走本机。代理不可用时会明确报错，不会悄悄改走其他 API。",
                 13,
                 Color.rgb(151, 165, 185));
         onlineTip.setLineSpacing(dp(3), 1f);
@@ -229,14 +170,14 @@ public final class MainActivity extends Activity {
         testButton.setOnClickListener(v -> testProxy());
         root.addView(testButton, fullWidth(dp(10)));
 
-        startButton = primaryButton("启动离线实时翻译（由 Google 翻译提供支持）");
+        startButton = primaryButton("启动按需屏幕翻译（由 Google 翻译提供支持）");
         startButton.setOnClickListener(v -> beginStartFlow());
         root.addView(startButton, fullWidth(dp(16)));
 
         Button stopButton = secondaryButton("停止并关闭悬浮球");
         stopButton.setOnClickListener(v -> {
             stopService(new Intent(this, ScreenTranslateService.class));
-            statusText.setText("已停止实时翻译");
+            statusText.setText("已停止并关闭悬浮球");
             statusText.setTextColor(Color.rgb(188, 199, 216));
         });
         root.addView(stopButton, fullWidth(dp(10)));
@@ -250,9 +191,9 @@ public final class MainActivity extends Activity {
         TextView steps = text(
                 "1. 第一次使用先下载离线模型，之后没有网络也能翻译。\n" +
                 "2. 点击启动并授予悬浮窗、通知和系统录屏权限。\n" +
-                "3. 切换到英文页面，译文会自动覆盖，无需反复点击。\n" +
-                "4. 普通点击悬浮球可立即离线刷新；拖动可改变位置。\n" +
-                "5. 只有你开启在线精译后，长按悬浮球才会上传一次画面。",
+                "3. 切换到目标页面，短按悬浮球；本机会分批处理到整页英文全部完成。\n" +
+                "4. 拖动悬浮球可改变位置；拖动不会触发翻译。\n" +
+                "5. 只有连续按住悬浮球满 3 秒，才会向已配置的代理上传一次当前画面。",
                 15,
                 Color.rgb(214, 222, 234));
         steps.setLineSpacing(dp(6), 1f);
@@ -261,17 +202,13 @@ public final class MainActivity extends Activity {
         root.addView(steps);
 
         TextView privacy = text(
-                "隐私：离线实时模式的 OCR、翻译、术语修正和缓存全部在设备上完成。首次下载模型需要网络，但不会上传屏幕文字。开启在线精译后，长按时的截图会发送给所配置的服务，密码、支付和私密页面不要使用在线精译。自动翻译可能有误，应以英文原文为准。",
+                "隐私：短按模式的 OCR、翻译、术语修正和缓存全部在设备上完成。首次下载模型需要网络，但不会上传屏幕文字。按住满 3 秒后，截图会发送给你配置的代理；密码、支付和私密页面不要使用在线精译。机器翻译无法作出数学意义上的 100% 正确保证，应用会用术语表、严格校验和原标点恢复尽量避免错误。",
                 13,
                 Color.rgb(151, 165, 185));
         privacy.setLineSpacing(dp(4), 1f);
         root.addView(privacy, fullWidth(dp(18)));
 
         return scroll;
-    }
-
-    private void updateIntervalLabel(int intervalMs) {
-        intervalLabel.setText(String.format("刷新间隔：%.1f 秒", intervalMs / 1000f));
     }
 
     private void downloadOfflineModel() {
@@ -363,7 +300,7 @@ public final class MainActivity extends Activity {
                             }
                             AppLog.info(this, "MODEL", "DOWNLOAD_VERIFIED", "downloaded=true");
                             showModelReady();
-                            statusText.setText("离线模型已下载并验证，可以启动实时翻译");
+                            statusText.setText("离线模型已下载并验证，可以启动按需翻译");
                             statusText.setTextColor(Color.rgb(77, 225, 193));
                             if (startAfterModelReady) continueStartFlow();
                         })
@@ -424,7 +361,7 @@ public final class MainActivity extends Activity {
         waitingToStart = false;
         MediaProjectionManager manager =
                 (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-        statusText.setText("请确认录屏授权；实时画面只在本机处理");
+        statusText.setText("请确认录屏授权；只有你主动点击时才读取一帧画面");
         Intent captureIntent;
         if (Build.VERSION.SDK_INT >= 34) {
             captureIntent = manager.createScreenCaptureIntent(
@@ -487,7 +424,7 @@ public final class MainActivity extends Activity {
         }
         if (requestCode == REQ_CAPTURE) {
             if (resultCode != RESULT_OK || data == null) {
-                statusText.setText("未获得录屏权限，实时翻译没有启动");
+                statusText.setText("未获得录屏权限，按需翻译没有启动");
                 AppLog.warn(this, "ACTIVITY", "CAPTURE_PERMISSION_DENIED",
                         "resultCode=" + resultCode + " data=" + (data != null));
                 return;
@@ -500,12 +437,10 @@ public final class MainActivity extends Activity {
             } else {
                 startService(service);
             }
-            statusText.setText(realtimeInput.isChecked()
-                    ? "已启动：离线模型已验证，正在连续翻译"
-                    : "已启动：离线模型已验证，点击悬浮球即可翻译");
+            statusText.setText("已启动：短按本地翻译整页；按住 3 秒尝试云端精译");
             statusText.setTextColor(Color.rgb(77, 225, 193));
             AppLog.info(this, "ACTIVITY", "SERVICE_START_REQUESTED",
-                    "realtime=" + realtimeInput.isChecked());
+                    "mode=on_demand");
             return;
         }
         if (requestCode == REQ_EXPORT_LOG && resultCode == RESULT_OK
@@ -534,18 +469,10 @@ public final class MainActivity extends Activity {
 
     private boolean saveSettings() {
         String url = normalizedUrl(proxyUrlInput.getText().toString());
-        if (onlineRefinementInput.isChecked() && url == null) {
-            proxyUrlInput.setError("启用在线精译时，需要有效的 http:// 或 https:// 代理地址");
-            return false;
-        }
         if (url == null) url = "http://127.0.0.1:8787";
-        int interval = MIN_INTERVAL_MS + intervalInput.getProgress() * 100;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_PROXY_URL, url)
                 .putString(KEY_PROXY_TOKEN, tokenInput.getText().toString().trim())
-                .putBoolean(KEY_REALTIME_ENABLED, realtimeInput.isChecked())
-                .putInt(KEY_REALTIME_INTERVAL_MS, interval)
-                .putBoolean(KEY_ONLINE_REFINEMENT, onlineRefinementInput.isChecked())
                 .apply();
         proxyUrlInput.setText(url);
         return true;
@@ -573,7 +500,7 @@ public final class MainActivity extends Activity {
                 String body = readText(stream);
                 runOnUiThread(() -> {
                     statusText.setText(status >= 200 && status < 300
-                            ? "可选代理连接正常；实时翻译仍默认只走本机"
+                            ? "可选代理连接正常；只有按住满 3 秒才会使用它"
                             : "代理返回错误：HTTP " + status + " " + compact(body));
                     statusText.setTextColor(status >= 200 && status < 300
                             ? Color.rgb(77, 225, 193) : Color.rgb(255, 122, 122));
@@ -683,15 +610,6 @@ public final class MainActivity extends Activity {
         return edit;
     }
 
-    private CheckBox checkBox(String label) {
-        CheckBox box = new CheckBox(this);
-        box.setText(label);
-        box.setTextSize(15);
-        box.setTextColor(Color.rgb(218, 226, 238));
-        box.setButtonTintList(android.content.res.ColorStateList.valueOf(Color.rgb(77, 225, 193)));
-        return box;
-    }
-
     private TextView sectionTitle(String value) {
         TextView view = text(value, 17, Color.WHITE);
         view.setGravity(Gravity.BOTTOM);
@@ -744,10 +662,6 @@ public final class MainActivity extends Activity {
 
     private int dp(float value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
     }
 
     @Override

@@ -66,3 +66,21 @@ test("normalization clamps model coordinates and removes blank translations", ()
     height: 50
   }]);
 });
+
+test("normalization rejects Chinese source regions and English-only pseudo translations", () => {
+  const value = normalizeTranslationPayload({
+    translations: [
+      { source: "中文 Exploit", translated: "漏洞利用", x: 1, y: 1, width: 10, height: 10 },
+      { source: "Security alert!", translated: "Security alert!", x: 1, y: 1, width: 10, height: 10 },
+      { source: "Security alert!", translated: "安全告警！", x: 2, y: 2, width: 20, height: 20 }
+    ]
+  });
+  assert.deepEqual(value.translations, [{
+    source: "Security alert!",
+    translated: "安全告警！",
+    x: 2,
+    y: 2,
+    width: 20,
+    height: 20
+  }]);
+});

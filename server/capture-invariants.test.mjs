@@ -22,6 +22,10 @@ const glossarySourceUrl = new URL(
   "../app/src/main/java/com/yyh/screensectranslator/CyberGlossary.java",
   import.meta.url
 );
+const overlaySourceUrl = new URL(
+  "../app/src/main/java/com/yyh/screensectranslator/TranslationOverlayView.java",
+  import.meta.url
+);
 const dictionaryUrl = new URL(
   "../app/src/main/assets/cyber-security-en-zh.tsv",
   import.meta.url
@@ -79,7 +83,7 @@ test("startup checks the real ML Kit model state before requesting capture", asy
   const activity = await readFile(activitySourceUrl, "utf8");
   const engine = await readFile(engineSourceUrl, "utf8");
   assert.match(activity, /OfflineModelState\.isDownloaded\(\)/);
-  assert.match(activity, /离线模型已验证/);
+  assert.match(activity, /离线模型.*验证/);
   assert.doesNotMatch(activity, /已启动：模型就绪后/);
   assert.match(engine, /OfflineModelState\.isDownloaded\(\)/);
   assert.doesNotMatch(engine, /downloadModelIfNeeded/);
@@ -103,26 +107,52 @@ test("offline translation never exposes model-visible placeholder delimiters", a
   assert.match(engine, /translator\.translate\(candidate\.source\)/);
 });
 
-test("static pages are completed progressively without repeating OCR", async () => {
+test("one local tap completes all page batches without another screenshot", async () => {
   const service = await readFile(sourceUrl, "utf8");
   const engine = await readFile(engineSourceUrl, "utf8");
   assert.match(engine, /LINES_PER_PASS/);
   assert.match(engine, /class PageSession/);
-  assert.match(engine, /boolean hasPendingPageWork\(\)/);
   assert.match(engine, /void continuePage\(TranslationCallback callback\)/);
-  const pendingCheck = service.indexOf("offlineEngine.hasPendingPageWork()");
-  const completedSkip = service.indexOf('"UNCHANGED_PAGE_COMPLETE"');
-  assert.ok(pendingCheck >= 0, "unchanged pages must check pending translation work");
-  assert.ok(completedSkip > pendingCheck, "pending work must continue before skip logic");
-  assert.match(service, /offlineEngine\.continuePage/);
+  assert.match(service, /if \(!progress\.complete\)/);
+  assert.match(service, /continueStaticPage\(bitmap\)/);
+  assert.doesNotMatch(service, /FrameFingerprint|UNCHANGED_PAGE_COMPLETE/);
 });
 
-test("quality gate rejects internal markers and untranslated English", async () => {
+test("quality gate rejects Chinese input, internal markers, and untranslated English", async () => {
   const engine = await readFile(engineSourceUrl, "utf8");
-  assert.match(engine, /INTERNAL_MARKER/);
-  assert.match(engine, /HAN\.matcher\(clean\)\.find\(\)/);
-  assert.match(engine, /CyberGlossary\.protectedTokensPreserved/);
+  const glossary = await readFile(glossarySourceUrl, "utf8");
+  assert.match(engine, /line\.getElements\(\)/);
+  assert.match(engine, /CyberGlossary\.containsHan\(text\)/);
+  assert.doesNotMatch(engine, /MAX_LINES/);
+  assert.match(glossary, /INTERNAL_MARKER/);
+  assert.match(glossary, /containsHan\(source\)/);
+  assert.match(glossary, /protectedTokensPreserved\(source, output\)/);
   assert.match(engine, /QUALITY_REJECTED/);
+});
+
+test("translation is on demand and cloud requires a full three-second hold", async () => {
+  const service = await readFile(sourceUrl, "utf8");
+  const activity = await readFile(activitySourceUrl, "utf8");
+  assert.match(service, /LONG_PRESS_MS = 3_000L/);
+  assert.match(service, /postDelayed\(triggerLongPress, LONG_PRESS_MS\)/);
+  assert.match(service, /requestLocalTranslation\(\)/);
+  assert.doesNotMatch(service, /realtimeTick|scheduleNextRealtime|realtimeEnabled/);
+  assert.doesNotMatch(activity, /KEY_REALTIME|持续自动翻译|刷新间隔/);
+});
+
+test("overlay uses an exact 110 percent blur mask and contrast-safe opposite color", async () => {
+  const overlay = await readFile(overlaySourceUrl, "utf8");
+  assert.match(overlay, /MASK_SCALE = 1\.10f/);
+  assert.match(overlay, /RenderEffect\.createBlurEffect/);
+  assert.match(overlay, /dominantColor/);
+  assert.match(overlay, /oppositeColor/);
+  assert.match(overlay, /MIN_CONTRAST = 4\.5f/);
+});
+
+test("source punctuation is restored after local translation", async () => {
+  const glossary = await readFile(glossarySourceUrl, "utf8");
+  assert.match(glossary, /restoreSourcePunctuation/);
+  assert.match(glossary, /SENTENCE_PUNCTUATION/);
 });
 
 test("dictionary covers the security dashboard fixture", async () => {
