@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+  <rect width="1200" height="760" fill="#0b1019"/>
+  <rect x="45" y="45" width="1110" height="670" rx="22" fill="#141b27" stroke="#354255" stroke-width="2"/>
+  <text x="85" y="110" fill="#ffffff" font-family="DejaVu Sans" font-size="34" font-weight="bold">Security Incident Dashboard</text>
+  <text x="85" y="160" fill="#ff7676" font-family="DejaVu Sans" font-size="25">Critical vulnerability detected on the public-facing endpoint</text>
+  <text x="85" y="225" fill="#9fb0c8" font-family="DejaVu Sans" font-size="22">CVE-2026-1234 · Remote code execution · Exploit available</text>
+  <rect x="85" y="270" width="1030" height="105" rx="10" fill="#0d141f"/>
+  <text x="110" y="315" fill="#4de1c1" font-family="DejaVu Sans Mono" font-size="20">curl -X POST https://example.test/api/login -d '{"user":"admin"}'</text>
+  <text x="110" y="350" fill="#9fb0c8" font-family="DejaVu Sans" font-size="19">Command blocked by endpoint protection</text>
+  <text x="85" y="440" fill="#ffffff" font-family="DejaVu Sans" font-size="25" font-weight="bold">Observed behavior</text>
+  <text x="85" y="485" fill="#cbd5e4" font-family="DejaVu Sans" font-size="22">The payload attempted privilege escalation and credential dumping.</text>
+  <text x="85" y="525" fill="#cbd5e4" font-family="DejaVu Sans" font-size="22">A reverse shell connection to 192.0.2.15:4444 was prevented.</text>
+  <rect x="85" y="585" width="245" height="60" rx="12" fill="#4de1c1"/>
+  <text x="127" y="624" fill="#061916" font-family="DejaVu Sans" font-size="22" font-weight="bold">Investigate alert</text>
+  <rect x="350" y="585" width="210" height="60" rx="12" fill="#273245"/>
+  <text x="398" y="624" fill="#ffffff" font-family="DejaVu Sans" font-size="22">Mark as safe</text>
+</svg>

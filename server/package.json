@@ -1,0 +1,15 @@
+{
+  "name": "screen-sec-translator-proxy",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional privacy-conscious Gemini/OpenAI refinement proxy for ScreenSec Translator",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs",
+    "test": "node --test"
+  }
+}

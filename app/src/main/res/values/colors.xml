@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="screen_bg">#0B1019</color>
+    <color name="screen_primary">#4DE1C1</color>
+    <color name="screen_status">#0B1019</color>
+</resources>
