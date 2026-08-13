@@ -1,4 +1,4 @@
-# 屏译·安全术语版 2.0.1
+# 屏译·安全术语版 2.0.2
 
 [![CI and Android APK](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml)
 [![CodeQL](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml)
@@ -21,6 +21,13 @@
 - 每次推送和拉取请求都会运行代理测试、密钥扫描并构建 APK；每周一会自动执行一次完整构建监控。
 - CodeQL 每次推送/拉取请求及每周三运行，Dependabot 每周检查 Gradle 与 GitHub Actions 更新。
 - App 内只有一个“下载详细日志”按钮；输入密码 `20121013` 后保存 TXT。日志记录权限、录屏会话、首帧、取帧重试、OCR/翻译耗时和异常，但不记录截图、OCR 文字、API 口令或密码。
+
+## 2.0.2 三星 Android 16 修复
+
+- 实机日志证明系统录屏授权和第一帧均正常；故障来自同尺寸 `onCapturedContentResize` 回调触发 `VirtualDisplay.resize()`，后者又触发同一回调，形成反馈环。
+- 现在同尺寸回调只记录一次并忽略；仅在横竖屏或 density 确实变化时重建捕获表面。
+- 点击悬浮球时悬浮球本身不会再消失，只暂时隐藏译文层。
+- 取帧连续失败时采用退避重试且仅首次弹窗，不再反复闪烁红色感叹号。
 
 Google 官方说明 ML Kit API 在设备端运行、可以实时使用并且不收费；翻译模型按需下载后可离线翻译。离线翻译更适合常见、简短文本，专业语境由本项目的本地安全词库继续修正，复杂长句可由用户手动触发一次在线精译。
 
