@@ -94,3 +94,41 @@ test("free terminology protects security tools and CamelCase product names", asy
   assert.match(glossary, /CAMEL_CASE/);
   assert.match(glossary, /externalKeep/);
 });
+
+test("offline translation never exposes model-visible placeholder delimiters", async () => {
+  const engine = await readFile(engineSourceUrl, "utf8");
+  const glossary = await readFile(glossarySourceUrl, "utf8");
+  assert.doesNotMatch(engine, /CyberGlossary\.protect\(|QSEG%|BATCH_SEGMENT/);
+  assert.doesNotMatch(glossary, /"ZZX"|class ProtectedText|class Replacement/);
+  assert.match(engine, /translator\.translate\(candidate\.source\)/);
+});
+
+test("static pages are completed progressively without repeating OCR", async () => {
+  const service = await readFile(sourceUrl, "utf8");
+  const engine = await readFile(engineSourceUrl, "utf8");
+  assert.match(engine, /LINES_PER_PASS/);
+  assert.match(engine, /class PageSession/);
+  assert.match(engine, /boolean hasPendingPageWork\(\)/);
+  assert.match(engine, /void continuePage\(TranslationCallback callback\)/);
+  const pendingCheck = service.indexOf("offlineEngine.hasPendingPageWork()");
+  const completedSkip = service.indexOf('"UNCHANGED_PAGE_COMPLETE"');
+  assert.ok(pendingCheck >= 0, "unchanged pages must check pending translation work");
+  assert.ok(completedSkip > pendingCheck, "pending work must continue before skip logic");
+  assert.match(service, /offlineEngine\.continuePage/);
+});
+
+test("quality gate rejects internal markers and untranslated English", async () => {
+  const engine = await readFile(engineSourceUrl, "utf8");
+  assert.match(engine, /INTERNAL_MARKER/);
+  assert.match(engine, /HAN\.matcher\(clean\)\.find\(\)/);
+  assert.match(engine, /CyberGlossary\.protectedTokensPreserved/);
+  assert.match(engine, /QUALITY_REJECTED/);
+});
+
+test("dictionary covers the security dashboard fixture", async () => {
+  const dictionary = await readFile(dictionaryUrl, "utf8");
+  assert.match(dictionary, /^security analyst dashboard\t安全分析师仪表盘$/m);
+  assert.match(dictionary, /^sql injection attack\tSQL 注入攻击$/m);
+  assert.match(dictionary, /^enumeration attempt\t枚举尝试$/m);
+  assert.match(dictionary, /^event tracking\t事件跟踪$/m);
+});

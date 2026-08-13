@@ -120,7 +120,7 @@ public final class MainActivity extends Activity {
         eyebrow.setLetterSpacing(0.12f);
         root.addView(eyebrow);
 
-        TextView title = text("屏译·安全术语版 2.0.3", 30, Color.WHITE);
+        TextView title = text("屏译·安全术语版 2.0.4", 30, Color.WHITE);
         title.setPadding(0, dp(8), 0, dp(8));
         root.addView(title);
 
@@ -602,7 +602,7 @@ public final class MainActivity extends Activity {
                 connection.setReadTimeout(15_000);
                 connection.setRequestMethod("GET");
                 connection.setRequestProperty("Accept", "text/plain");
-                connection.setRequestProperty("User-Agent", "ScreenSecTranslator/2.0.3");
+                connection.setRequestProperty("User-Agent", "ScreenSecTranslator/2.0.4");
                 int status = connection.getResponseCode();
                 InputStream stream = status >= 200 && status < 300
                         ? connection.getInputStream() : connection.getErrorStream();

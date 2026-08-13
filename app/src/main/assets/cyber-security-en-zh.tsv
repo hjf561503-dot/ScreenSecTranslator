@@ -1,5 +1,5 @@
 # ScreenSecTranslator freely redistributable cybersecurity terminology
-# version=2026.08.13.1
+# version=2026.08.13.2
 # Format: English<TAB>Simplified Chinese; @KEEP means preserve the product/tool name.
 dirb	@KEEP
 dirbuster	@KEEP
@@ -46,6 +46,25 @@ tryhackme	@KEEP
 hack the box	@KEEP
 command prompt	命令提示符
 terminal	终端
+security analyst dashboard	安全分析师仪表盘
+security analyst	安全分析师
+soc operator	SOC 操作员
+admin user	管理员用户
+enumeration attempt	枚举尝试
+customer database	客户数据库
+investigating	调查中
+unassigned	未分配
+assigned to	分配给
+source	来源
+minutes ago	分钟前
+sql injection attack	SQL 注入攻击
+automated sql injection detected on payment form	检测到针对支付表单的自动化 SQL 注入攻击
+event tracking	事件跟踪
+resolved	已解决
+open	打开
+downloaded	已下载
+found	已发现
+scanning url	正在扫描 URL
 hidden page	隐藏页面
 hidden pages	隐藏页面
 hidden page finder	隐藏页面发现工具

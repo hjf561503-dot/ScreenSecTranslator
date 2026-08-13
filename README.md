@@ -1,9 +1,16 @@
-# 屏译·安全术语版 2.0.3
+# 屏译·安全术语版 2.0.4
 
 [![CI and Android APK](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml)
 [![CodeQL](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml)
 
 原生 Android 悬浮翻译工具。启动一次后，它会持续识别当前屏幕中的英文，在设备本地翻译成简体中文，并把译文自动覆盖到原文附近。默认模式不调用云端 API、不上传截图，也不需要代理服务。
+
+## 2.0.4 逐行翻译与静态页面补全
+
+- 删除会泄漏为 `ZZX/XZZ` 的术语占位符和会被模型破坏的批量行分隔符；每个 OCR 文本行现在独立翻译、独立定位，行与行之间不会再被粘连。
+- 静态页面不再首轮后直接跳过：每轮处理一小批尚未完成的行，译文累计覆盖，直到当前页面全部候选文本处理完毕。
+- 新增输出质量闸门：没有中文、与英文原文相同、含内部标记，或损坏 URL、IP、CVE、哈希、路径、工具名及安全缩写的结果都不会显示。
+- OCR 长边提高到 1800 像素、每页最多处理 100 行，并补充安全仪表盘、SQL 注入、告警状态等免费本地术语。
 
 ## 2.0.3 模型状态、术语与悬浮球修复
 
@@ -20,8 +27,8 @@
 - 使用内置的 ML Kit 拉丁文字识别；中英翻译模型首次下载后可离线运行。
 - 已删除悬浮球和译文层上的 `FLAG_SECURE`，不会再阻止用户正常截图；本机 OCR 取帧时只短暂隐藏自身覆盖层，避免重复识别译文。
 - 取帧改为监听 `ImageReader` 新帧事件并用 `acquireLatestImage()` 取得最新帧，首帧最长等待约 3 秒，修复已授权却提示“暂时没有取得屏幕画面”的问题。
-- OCR 会先把长边降到 1600 像素，并把最多 12 行合并成一次离线翻译任务，减少全分辨率 OCR 和逐行翻译的等待。
-- 用画面指纹跳过没有变化的帧，并用 600 条 LRU 缓存复用已经翻译的句子。
+- OCR 会先把长边限制到 1800 像素；每个 OCR 行独立翻译，避免批量分隔符破坏空格、标点与布局。
+- 用画面指纹识别静态页面；未处理完时继续翻译下一批并累计覆盖，完成后才跳过，用 800 条 LRU 缓存复用已翻译句子。
 - 本地安全术语表会固定“权限提升、凭据转储、横向移动、失陷指标（IOC）、命令与控制（C2）”等译法。
 - URL、IP、端口、CVE、哈希、文件路径、命令、源码和常见缩写会尽量保持原样。
 - 译文按 OCR 行的坐标覆盖；普通点击悬浮球会立即离线刷新。

@@ -60,7 +60,7 @@ public final class ScreenTranslateService extends Service {
     private static final int NOTIFICATION_ID = 7301;
     private static final int MAX_CAPTURE_RETRIES = 40;
     private static final long CAPTURE_RETRY_MS = 75L;
-    private static final int UNCHANGED_HASH_DISTANCE = 0;
+    private static final int UNCHANGED_HASH_DISTANCE = 3;
     private static final long LONG_PRESS_MS = 650L;
     private static final long ONLINE_RESULT_HOLD_MS = 10_000L;
     private static final String LOCAL_ATTRIBUTION = "由 Google 翻译提供支持";
@@ -359,6 +359,7 @@ public final class ScreenTranslateService extends Service {
         awaitingFrame = false;
         captureHandler.removeCallbacks(frameRetry);
         hasFrameHash = false;
+        if (offlineEngine != null) offlineEngine.clearPage();
         firstFrameObserved = false;
         removeTranslationOverlay();
         captureWidth = width;
@@ -614,25 +615,35 @@ public final class ScreenTranslateService extends Service {
         }
 
         long fingerprint = FrameFingerprint.differenceHash(bitmap);
-        if (!force && hasFrameHash
-                && FrameFingerprint.distance(lastFrameHash, fingerprint) <= UNCHANGED_HASH_DISTANCE) {
+        int hashDistance = hasFrameHash
+                ? FrameFingerprint.distance(lastFrameHash, fingerprint)
+                : Integer.MAX_VALUE;
+        boolean unchanged = hasFrameHash && hashDistance <= UNCHANGED_HASH_DISTANCE;
+        if (unchanged && offlineEngine.hasPendingPageWork()) {
             bitmap.recycle();
-            AppLog.info(this, "CAPTURE", "UNCHANGED_SKIPPED", "hash_distance=0");
+            AppLog.info(this, "CAPTURE", "UNCHANGED_PROGRESSIVE_CONTINUE",
+                    "hash_distance=" + hashDistance);
+            continueStaticPage();
+            return;
+        }
+        if (!force && unchanged) {
+            bitmap.recycle();
+            AppLog.info(this, "CAPTURE", "UNCHANGED_PAGE_COMPLETE",
+                    "hash_distance=" + hashDistance);
             mainHandler.post(this::finishWithoutVisualChange);
             return;
         }
         lastFrameHash = fingerprint;
         hasFrameHash = true;
+        translateNewLocalPage(bitmap);
+    }
 
-        offlineEngine.translate(bitmap, new OfflineTranslationEngine.TranslationCallback() {
+    private void translateNewLocalPage(Bitmap bitmap) {
+        offlineEngine.translateNewPage(bitmap, new OfflineTranslationEngine.TranslationCallback() {
             @Override
-            public void onSuccess(List<ScreenTranslation> translations) {
+            public void onSuccess(OfflineTranslationEngine.PageProgress progress) {
                 bitmap.recycle();
-                mainHandler.post(() -> {
-                    if (destroyed) return;
-                    updateTranslationOverlay(translations, LOCAL_ATTRIBUTION);
-                    finishRequest();
-                });
+                showLocalProgress(progress);
             }
 
             @Override
@@ -640,6 +651,32 @@ public final class ScreenTranslateService extends Service {
                 bitmap.recycle();
                 fail("离线识别失败：" + safeMessage(error));
             }
+        });
+    }
+
+    private void continueStaticPage() {
+        offlineEngine.continuePage(new OfflineTranslationEngine.TranslationCallback() {
+            @Override
+            public void onSuccess(OfflineTranslationEngine.PageProgress progress) {
+                showLocalProgress(progress);
+            }
+
+            @Override
+            public void onFailure(Exception error) {
+                fail("继续翻译静态页面失败：" + safeMessage(error));
+            }
+        });
+    }
+
+    private void showLocalProgress(OfflineTranslationEngine.PageProgress progress) {
+        mainHandler.post(() -> {
+            if (destroyed) return;
+            updateTranslationOverlay(progress.translations, LOCAL_ATTRIBUTION);
+            AppLog.info(this, "TRANSLATE", "PAGE_PROGRESS_SHOWN",
+                    "processed=" + progress.processedLines + " total=" + progress.totalLines
+                            + " visible=" + progress.translations.size()
+                            + " complete=" + progress.complete);
+            finishRequest();
         });
     }
 

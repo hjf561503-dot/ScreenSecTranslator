@@ -35,7 +35,11 @@ final class CyberGlossary {
             "(?<![A-Za-z0-9])(?:[A-Z][a-z0-9]+){2,}(?![A-Za-z0-9])");
     private static final Pattern PROTECTED_DATA = Pattern.compile(
             "(?i)(https?://\\S+|CVE-\\d{4}-\\d{4,8}|\\b(?:\\d{1,3}\\.){3}\\d{1,3}(?::\\d{1,5})?\\b|"
-                    + "\\b[a-f0-9]{32,64}\\b|(?:[A-Za-z]:\\\\|/)[^\\s]+|\\b[A-Z][A-Z0-9_-]{1,12}\\b)");
+                    + "\\b[a-f0-9]{32,64}\\b|(?<![A-Za-z0-9])(?:[A-Za-z]:\\\\|/)[^\\s]+|"
+                    + "\\b[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+\\b)");
+    private static final Pattern TECH_TOKEN = Pattern.compile(
+            "(?i)(?<![A-Za-z0-9])(?:API|CLI|CVE|DNS|EDR|HTTP|HTTPS|IOC|IP|MFA|RCE|SIEM|"
+                    + "SOC|SQL|SSH|SSL|SSRF|TCP|TLS|UDP|URL|XSS|YARA)(?![A-Za-z0-9])");
     private static final Pattern COMMAND_PREFIX = Pattern.compile(
             "(?i)^\\s*(?:[$>#]\\s*)?(?:adb|am|apt|bash|cat|chmod|curl|docker|git|grep|java|jq|kubectl|"
                     + "dirb|ffuf|gobuster|hydra|msfconsole|netcat|nc|nikto|nmap|node|npm|nuclei|"
@@ -221,21 +225,36 @@ final class CyberGlossary {
         return TERMS.get(normalized);
     }
 
-    static ProtectedText protect(String source) {
-        List<Replacement> replacements = new ArrayList<>();
-        String encoded = replacePattern(source, PROTECTED_DATA, replacements, false);
-        encoded = replacePattern(encoded, CAMEL_CASE, replacements, false);
+    static String polishTranslation(String source, String raw) {
+        if (raw == null) return "";
+        String output = raw.replace('\n', ' ').replace('\r', ' ')
+                .replaceAll("\\s+", " ").trim();
+        output = replaceKnownTermsOutsideProtectedData(output, externalExact);
+        output = replaceKnownTermsOutsideProtectedData(output, TERMS);
+        output = output.replaceAll("\\s+([，。！？；：,.!?;:])", "$1")
+                .replaceAll("([\\p{IsHan}])([A-Za-z0-9])", "$1 $2")
+                .replaceAll("([A-Za-z0-9])([\\p{IsHan}])", "$1 $2")
+                .replaceAll(" {2,}", " ")
+                .trim();
+        return output;
+    }
+
+    static boolean protectedTokensPreserved(String source, String translated) {
+        if (source == null || translated == null) return false;
+        List<String> required = new ArrayList<>();
+        collectMatches(source, PROTECTED_DATA, required);
+        collectMatches(source, CAMEL_CASE, required);
+        collectMatches(source, TECH_TOKEN, required);
         for (String name : externalKeep) {
             Pattern pattern = Pattern.compile(
                     "(?i)(?<![A-Za-z0-9])" + Pattern.quote(name) + "(?![A-Za-z0-9])");
-            encoded = replacePattern(encoded, pattern, replacements, false);
+            collectMatches(source, pattern, required);
         }
-        for (Map.Entry<String, String> entry : TERMS.entrySet()) {
-            Pattern pattern = Pattern.compile(
-                    "(?i)(?<![A-Za-z0-9])" + Pattern.quote(entry.getKey()) + "(?![A-Za-z0-9])");
-            encoded = replacePattern(encoded, pattern, replacements, true, entry.getValue());
+        String folded = translated.toLowerCase(Locale.ROOT);
+        for (String token : required) {
+            if (!folded.contains(token.toLowerCase(Locale.ROOT))) return false;
         }
-        return new ProtectedText(encoded, replacements);
+        return true;
     }
 
     private static void install(Map<String, String> translated, Set<String> kept, String version) {
@@ -292,23 +311,41 @@ final class CyberGlossary {
         return value == null ? "" : value.replace('\n', ' ').replace('\r', ' ');
     }
 
-    private static String replacePattern(String input, Pattern pattern,
-                                         List<Replacement> replacements, boolean fixedTarget) {
-        return replacePattern(input, pattern, replacements, fixedTarget, null);
+    private static String replaceKnownTermsOutsideProtectedData(
+            String input, Map<String, String> translations) {
+        Matcher protectedMatcher = PROTECTED_DATA.matcher(input);
+        StringBuilder output = new StringBuilder();
+        int cursor = 0;
+        while (protectedMatcher.find()) {
+            output.append(replaceKnownTerms(input.substring(cursor, protectedMatcher.start()),
+                    translations));
+            output.append(protectedMatcher.group());
+            cursor = protectedMatcher.end();
+        }
+        output.append(replaceKnownTerms(input.substring(cursor), translations));
+        return output.toString();
     }
 
-    private static String replacePattern(String input, Pattern pattern,
-                                         List<Replacement> replacements, boolean fixedTarget,
-                                         String target) {
-        Matcher matcher = pattern.matcher(input);
-        StringBuffer output = new StringBuffer();
-        while (matcher.find()) {
-            String token = "ZZX" + String.format(Locale.ROOT, "%03d", replacements.size()) + "XZZ";
-            replacements.add(new Replacement(token, fixedTarget ? target : matcher.group()));
-            matcher.appendReplacement(output, Matcher.quoteReplacement(token));
+    private static String replaceKnownTerms(String input, Map<String, String> translations) {
+        String output = input;
+        for (Map.Entry<String, String> entry : translations.entrySet()) {
+            String source = entry.getKey();
+            if (source.length() < 4) continue;
+            Pattern pattern = Pattern.compile(
+                    "(?i)(?<![A-Za-z0-9])" + Pattern.quote(source) + "(?![A-Za-z0-9])");
+            output = pattern.matcher(output).replaceAll(Matcher.quoteReplacement(entry.getValue()));
         }
-        matcher.appendTail(output);
-        return output.toString();
+        return output;
+    }
+
+    private static void collectMatches(String input, Pattern pattern, List<String> output) {
+        Matcher matcher = pattern.matcher(input);
+        while (matcher.find()) {
+            String value = matcher.group();
+            if (value == null) continue;
+            value = value.trim().replaceAll("[.,;:!?，。；：！？)\\]}]+$", "");
+            if (!value.isEmpty()) output.add(value);
+        }
     }
 
     private static void term(String source, String target) {
@@ -317,40 +354,6 @@ final class CyberGlossary {
 
     private static void exact(String source, String target) {
         EXACT.put(source.toLowerCase(Locale.ROOT), target);
-    }
-
-    static final class ProtectedText {
-        final String encoded;
-        private final List<Replacement> replacements;
-
-        ProtectedText(String encoded, List<Replacement> replacements) {
-            this.encoded = encoded;
-            this.replacements = replacements;
-        }
-
-        String restore(String translated) {
-            String output = translated == null ? "" : translated.trim();
-            for (Replacement replacement : replacements) {
-                StringBuilder fuzzyToken = new StringBuilder("(?i)");
-                for (int i = 0; i < replacement.token.length(); i++) {
-                    if (i > 0) fuzzyToken.append("[\\s._-]*");
-                    fuzzyToken.append(Pattern.quote(String.valueOf(replacement.token.charAt(i))));
-                }
-                output = output.replaceAll(fuzzyToken.toString(),
-                        Matcher.quoteReplacement(replacement.value));
-            }
-            return output.replaceAll("\\s+([，。！？；：,.!?;:])", "$1").trim();
-        }
-    }
-
-    private static final class Replacement {
-        final String token;
-        final String value;
-
-        Replacement(String token, String value) {
-            this.token = token;
-            this.value = value;
-        }
     }
 
     static final class DictionarySummary {
