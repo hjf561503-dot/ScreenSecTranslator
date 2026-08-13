@@ -97,12 +97,17 @@ public final class ScreenTranslateService extends Service {
     private boolean pendingCaptureForce;
     private int pendingCaptureAttempt;
     private long captureRequestStartedAt;
+    private int consecutiveCaptureFailures;
+    private long captureBackoffUntil;
+    private boolean loggedSameSizeCallback;
 
     private final Runnable frameRetry = this::acquirePendingFrame;
+    private final Runnable configurationResize = this::resizeCaptureSurfaceFromMetrics;
 
     private final Runnable realtimeTick = () -> {
         if (destroyed || !realtimeEnabled) return;
-        if (System.currentTimeMillis() < suppressAutoUntil || busy.get()) {
+        long now = System.currentTimeMillis();
+        if (now < suppressAutoUntil || now < captureBackoffUntil || busy.get()) {
             scheduleNextRealtime();
             return;
         }
@@ -123,9 +128,23 @@ public final class ScreenTranslateService extends Service {
 
         @Override
         public void onCapturedContentResize(int width, int height) {
+            if (width <= 0 || height <= 0) return;
+            int density = getResources().getConfiguration().densityDpi;
+            if (width == captureWidth && height == captureHeight && density == captureDensity) {
+                if (!loggedSameSizeCallback) {
+                    loggedSameSizeCallback = true;
+                    AppLog.info(ScreenTranslateService.this, "CAPTURE",
+                            "CONTENT_RESIZE_IGNORED",
+                            "reason=same_dimensions width=" + width + " height=" + height
+                                    + " density=" + density);
+                }
+                return;
+            }
             AppLog.info(ScreenTranslateService.this, "CAPTURE", "CONTENT_RESIZED",
-                    "width=" + width + " height=" + height);
-            mainHandler.post(() -> resizeCaptureSurface(width, height));
+                    "old_width=" + captureWidth + " old_height=" + captureHeight
+                            + " new_width=" + width + " new_height=" + height
+                            + " density=" + density);
+            resizeCaptureSurface(width, height, density);
         }
     };
 
@@ -309,16 +328,33 @@ public final class ScreenTranslateService extends Service {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        mainHandler.postDelayed(this::resizeCaptureSurface, 250);
+        mainHandler.removeCallbacks(configurationResize);
+        mainHandler.postDelayed(configurationResize, 250);
     }
 
-    private void resizeCaptureSurface() {
-        updateCaptureSize();
-        resizeCaptureSurface(captureWidth, captureHeight);
+    private void resizeCaptureSurfaceFromMetrics() {
+        int width;
+        int height;
+        int density = getResources().getConfiguration().densityDpi;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Rect bounds = windowManager.getMaximumWindowMetrics().getBounds();
+            width = bounds.width();
+            height = bounds.height();
+        } else {
+            DisplayMetrics real = new DisplayMetrics();
+            windowManager.getDefaultDisplay().getRealMetrics(real);
+            width = real.widthPixels;
+            height = real.heightPixels;
+            density = real.densityDpi;
+        }
+        resizeCaptureSurface(width, height, density);
     }
 
-    private void resizeCaptureSurface(int width, int height) {
+    private void resizeCaptureSurface(int width, int height, int density) {
         if (virtualDisplay == null || width <= 0 || height <= 0) return;
+        if (width == captureWidth && height == captureHeight && density == captureDensity) {
+            return;
+        }
         busy.set(false);
         awaitingFrame = false;
         captureHandler.removeCallbacks(frameRetry);
@@ -327,7 +363,8 @@ public final class ScreenTranslateService extends Service {
         removeTranslationOverlay();
         captureWidth = width;
         captureHeight = height;
-        captureDensity = getResources().getConfiguration().densityDpi;
+        captureDensity = density;
+        loggedSameSizeCallback = false;
         virtualDisplay.setSurface(null);
         if (imageReader != null) {
             imageReader.setOnImageAvailableListener(null, null);
@@ -479,13 +516,11 @@ public final class ScreenTranslateService extends Service {
 
     private void hideOverlayForCapture() {
         if (translationOverlay != null) translationOverlay.setVisibility(View.INVISIBLE);
-        if (bubbleView != null) bubbleView.setVisibility(View.INVISIBLE);
     }
 
     private void restoreOverlayAfterCapture() {
         mainHandler.post(() -> {
             if (translationOverlay != null) translationOverlay.setVisibility(View.VISIBLE);
-            if (bubbleView != null) bubbleView.setVisibility(View.VISIBLE);
         });
     }
 
@@ -526,18 +561,26 @@ public final class ScreenTranslateService extends Service {
             } else {
                 awaitingFrame = false;
                 restoreOverlayAfterCapture();
+                consecutiveCaptureFailures++;
+                long backoff = Math.min(30_000L,
+                        4_000L * (1L << Math.min(3, consecutiveCaptureFailures - 1)));
+                captureBackoffUntil = System.currentTimeMillis() + backoff;
                 AppLog.warn(this, "CAPTURE", "FRAME_TIMEOUT",
                         "wait_ms=" + (SystemClock.elapsedRealtime() - captureRequestStartedAt)
                                 + " first_frame_seen=" + firstFrameObserved
                                 + " reader=" + (imageReader != null)
-                                + " display=" + (virtualDisplay != null));
-                fail("暂时没有取得屏幕画面");
+                                + " display=" + (virtualDisplay != null)
+                                + " consecutive_failures=" + consecutiveCaptureFailures
+                                + " retry_backoff_ms=" + backoff);
+                fail("暂时没有取得屏幕画面", consecutiveCaptureFailures == 1);
             }
             return;
         }
 
         awaitingFrame = false;
         captureHandler.removeCallbacks(frameRetry);
+        consecutiveCaptureFailures = 0;
+        captureBackoffUntil = 0L;
         CaptureMode mode = pendingCaptureMode;
         boolean force = pendingCaptureForce;
 
@@ -763,6 +806,8 @@ public final class ScreenTranslateService extends Service {
         long delay = realtimeIntervalMs;
         long hold = suppressAutoUntil - System.currentTimeMillis();
         if (hold > delay) delay = hold;
+        long captureHold = captureBackoffUntil - System.currentTimeMillis();
+        if (captureHold > delay) delay = captureHold;
         mainHandler.postDelayed(realtimeTick, Math.max(100L, delay));
     }
 
@@ -778,17 +823,26 @@ public final class ScreenTranslateService extends Service {
     }
 
     private void fail(String message) {
+        fail(message, true);
+    }
+
+    private void fail(String message, boolean showToast) {
         AppLog.warn(this, "SERVICE", "REQUEST_FAILED", "message=" + message);
         mainHandler.post(() -> {
             if (destroyed) return;
             busy.set(false);
             if (translationOverlay != null) translationOverlay.setVisibility(View.VISIBLE);
-            setBubbleState("!", Color.rgb(255, 108, 108));
-            toast(message);
-            mainHandler.postDelayed(() -> {
+            if (showToast) {
+                setBubbleState("!", Color.rgb(255, 108, 108));
+                toast(message);
+                mainHandler.postDelayed(() -> {
+                    setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
+                    scheduleNextRealtime();
+                }, 1600);
+            } else {
                 setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
                 scheduleNextRealtime();
-            }, 1600);
+            }
         });
     }
 
