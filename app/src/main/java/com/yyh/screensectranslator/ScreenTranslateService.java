@@ -303,15 +303,6 @@ public final class ScreenTranslateService extends Service {
         if (awaitingFrame) {
             captureHandler.removeCallbacks(frameRetry);
             acquirePendingFrame();
-            return;
-        }
-        Image stale = null;
-        try {
-            stale = readyReader.acquireLatestImage();
-        } catch (IllegalStateException error) {
-            AppLog.error(this, "CAPTURE", "IDLE_FRAME_DRAIN_FAILED", "", error);
-        } finally {
-            if (stale != null) stale.close();
         }
     }
 
