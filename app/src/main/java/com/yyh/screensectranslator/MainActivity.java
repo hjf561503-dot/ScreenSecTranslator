@@ -2,6 +2,7 @@ package com.yyh.screensectranslator;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -25,6 +26,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.google.mlkit.common.model.DownloadConditions;
 import com.google.mlkit.nl.translate.TranslateLanguage;
@@ -48,13 +50,16 @@ public final class MainActivity extends Activity {
     static final String KEY_REALTIME_ENABLED = "realtime_enabled";
     static final String KEY_REALTIME_INTERVAL_MS = "realtime_interval_ms";
     static final String KEY_ONLINE_REFINEMENT = "online_refinement";
+    private static final String KEY_SPEED_MIGRATED_V201 = "speed_migrated_v201";
 
-    static final int MIN_INTERVAL_MS = 700;
-    static final int MAX_INTERVAL_MS = 3000;
+    static final int MIN_INTERVAL_MS = 300;
+    static final int MAX_INTERVAL_MS = 2000;
 
     private static final int REQ_OVERLAY = 1001;
     private static final int REQ_CAPTURE = 1002;
     private static final int REQ_NOTIFICATIONS = 1003;
+    private static final int REQ_EXPORT_LOG = 1004;
+    private static final String LOG_EXPORT_PASSWORD = "20121013";
 
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private EditText proxyUrlInput;
@@ -70,7 +75,21 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        AppLog.appStarted(this);
+        migrateSpeedDefault();
         setContentView(buildUi());
+    }
+
+    private void migrateSpeedDefault() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (prefs.getBoolean(KEY_SPEED_MIGRATED_V201, false)) return;
+        int previous = prefs.getInt(KEY_REALTIME_INTERVAL_MS, 1200);
+        SharedPreferences.Editor editor = prefs.edit()
+                .putBoolean(KEY_SPEED_MIGRATED_V201, true);
+        if (previous == 1200) editor.putInt(KEY_REALTIME_INTERVAL_MS, 600);
+        editor.apply();
+        AppLog.info(this, "SETTINGS", "SPEED_DEFAULT_MIGRATED",
+                "previous_ms=" + previous + " current_ms=" + (previous == 1200 ? 600 : previous));
     }
 
     private View buildUi() {
@@ -119,7 +138,7 @@ public final class MainActivity extends Activity {
         intervalInput = new SeekBar(this);
         intervalInput.setMax((MAX_INTERVAL_MS - MIN_INTERVAL_MS) / 100);
         int storedInterval = clamp(
-                prefs.getInt(KEY_REALTIME_INTERVAL_MS, 1200),
+                prefs.getInt(KEY_REALTIME_INTERVAL_MS, 600),
                 MIN_INTERVAL_MS,
                 MAX_INTERVAL_MS);
         intervalInput.setProgress((storedInterval - MIN_INTERVAL_MS) / 100);
@@ -141,7 +160,7 @@ public final class MainActivity extends Activity {
         root.addView(intervalInput, fullWidth(dp(4)));
 
         TextView speedTip = text(
-                "建议三星 Tab S9+ 使用 1.0–1.4 秒。低于 1 秒会增加发热；画面不变时会自动跳过 OCR 和翻译。",
+                "三星 Tab S9+ 建议使用 0.5–0.8 秒。画面不变时会自动跳过 OCR 和翻译；处理尚未结束时不会重复启动任务。",
                 13,
                 Color.rgb(151, 165, 185));
         root.addView(speedTip, fullWidth(dp(4)));
@@ -195,6 +214,11 @@ public final class MainActivity extends Activity {
             statusText.setTextColor(Color.rgb(188, 199, 216));
         });
         root.addView(stopButton, fullWidth(dp(10)));
+
+        root.addView(sectionTitle("详细日志"), fullWidth(dp(22)));
+        Button logButton = secondaryButton("下载详细日志");
+        logButton.setOnClickListener(v -> requestLogPassword());
+        root.addView(logButton, fullWidth(dp(8)));
 
         root.addView(sectionTitle("使用方式"), fullWidth(dp(22)));
         TextView steps = text(
@@ -285,6 +309,44 @@ public final class MainActivity extends Activity {
             captureIntent = manager.createScreenCaptureIntent();
         }
         startActivityForResult(captureIntent, REQ_CAPTURE);
+        AppLog.info(this, "ACTIVITY", "CAPTURE_PERMISSION_REQUESTED",
+                "sdk=" + Build.VERSION.SDK_INT);
+    }
+
+    private void requestLogPassword() {
+        EditText password = input("请输入日志下载密码");
+        password.setSingleLine(true);
+        password.setInputType(InputType.TYPE_CLASS_NUMBER
+                | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        password.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        int horizontal = dp(20);
+        LinearLayout holder = new LinearLayout(this);
+        holder.setPadding(horizontal, dp(8), horizontal, 0);
+        holder.addView(password, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("下载详细日志")
+                .setView(holder)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确认", null)
+                .create();
+        dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    if (!LOG_EXPORT_PASSWORD.contentEquals(password.getText())) {
+                        password.setError("密码错误");
+                        AppLog.warn(this, "LOG", "EXPORT_DENIED", "reason=wrong_password");
+                        return;
+                    }
+                    dialog.dismiss();
+                    Intent export = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    export.addCategory(Intent.CATEGORY_OPENABLE);
+                    export.setType("text/plain");
+                    export.putExtra(Intent.EXTRA_TITLE,
+                            "ScreenSecTranslator-detailed-log-" + System.currentTimeMillis() + ".txt");
+                    startActivityForResult(export, REQ_EXPORT_LOG);
+                }));
+        dialog.show();
     }
 
     @Override
@@ -302,6 +364,8 @@ public final class MainActivity extends Activity {
         if (requestCode == REQ_CAPTURE) {
             if (resultCode != RESULT_OK || data == null) {
                 statusText.setText("未获得录屏权限，实时翻译没有启动");
+                AppLog.warn(this, "ACTIVITY", "CAPTURE_PERMISSION_DENIED",
+                        "resultCode=" + resultCode + " data=" + (data != null));
                 return;
             }
             Intent service = new Intent(this, ScreenTranslateService.class);
@@ -316,6 +380,25 @@ public final class MainActivity extends Activity {
                     ? "已启动：模型就绪后会自动连续翻译"
                     : "已启动：点击悬浮球进行离线翻译");
             statusText.setTextColor(Color.rgb(77, 225, 193));
+            AppLog.info(this, "ACTIVITY", "SERVICE_START_REQUESTED",
+                    "realtime=" + realtimeInput.isChecked());
+            return;
+        }
+        if (requestCode == REQ_EXPORT_LOG && resultCode == RESULT_OK
+                && data != null && data.getData() != null) {
+            Uri destination = data.getData();
+            networkExecutor.execute(() -> {
+                try {
+                    AppLog.info(this, "LOG", "EXPORT_STARTED", "destination=system_document_picker");
+                    AppLog.export(this, destination);
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "详细日志已下载", Toast.LENGTH_LONG).show());
+                } catch (Exception error) {
+                    AppLog.error(this, "LOG", "EXPORT_FAILED", "", error);
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "日志下载失败：" + compact(error.getMessage()), Toast.LENGTH_LONG).show());
+                }
+            });
         }
     }
 

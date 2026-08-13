@@ -26,6 +26,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Base64;
 import android.util.DisplayMetrics;
@@ -57,7 +58,8 @@ public final class ScreenTranslateService extends Service {
 
     private static final String CHANNEL_ID = "screen_translation_capture";
     private static final int NOTIFICATION_ID = 7301;
-    private static final int MAX_CAPTURE_RETRIES = 10;
+    private static final int MAX_CAPTURE_RETRIES = 40;
+    private static final long CAPTURE_RETRY_MS = 75L;
     private static final int UNCHANGED_HASH_DISTANCE = 0;
     private static final long LONG_PRESS_MS = 650L;
     private static final long ONLINE_RESULT_HOLD_MS = 10_000L;
@@ -89,6 +91,14 @@ public final class ScreenTranslateService extends Service {
     private boolean hasFrameHash;
     private long lastFrameHash;
     private long suppressAutoUntil;
+    private volatile boolean awaitingFrame;
+    private boolean firstFrameObserved;
+    private CaptureMode pendingCaptureMode;
+    private boolean pendingCaptureForce;
+    private int pendingCaptureAttempt;
+    private long captureRequestStartedAt;
+
+    private final Runnable frameRetry = this::acquirePendingFrame;
 
     private final Runnable realtimeTick = () -> {
         if (destroyed || !realtimeEnabled) return;
@@ -103,6 +113,8 @@ public final class ScreenTranslateService extends Service {
         @Override
         public void onStop() {
             if (destroyed) return;
+            AppLog.warn(ScreenTranslateService.this, "CAPTURE", "PROJECTION_STOPPED",
+                    "system_callback=true");
             mainHandler.post(() -> {
                 toast("录屏授权已结束，实时翻译已停止");
                 stopSelf();
@@ -111,6 +123,8 @@ public final class ScreenTranslateService extends Service {
 
         @Override
         public void onCapturedContentResize(int width, int height) {
+            AppLog.info(ScreenTranslateService.this, "CAPTURE", "CONTENT_RESIZED",
+                    "width=" + width + " height=" + height);
             mainHandler.post(() -> resizeCaptureSurface(width, height));
         }
     };
@@ -122,19 +136,22 @@ public final class ScreenTranslateService extends Service {
         captureThread = new HandlerThread("ScreenSec-Capture");
         captureThread.start();
         captureHandler = new Handler(captureThread.getLooper());
-        offlineEngine = new OfflineTranslationEngine();
+        offlineEngine = new OfflineTranslationEngine(this);
         createNotificationChannel();
+        AppLog.info(this, "SERVICE", "CREATED", "capture_thread=started");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null || !intent.hasExtra(EXTRA_RESULT_DATA)) {
+            AppLog.warn(this, "SERVICE", "START_REJECTED", "reason=missing_projection_data");
             stopSelf();
             return START_NOT_STICKY;
         }
         loadSettings();
         startForegroundForProjection();
         if (!Settings.canDrawOverlays(this)) {
+            AppLog.warn(this, "SERVICE", "START_REJECTED", "reason=overlay_permission_missing");
             toast("缺少悬浮窗权限");
             stopSelf();
             return START_NOT_STICKY;
@@ -144,12 +161,16 @@ public final class ScreenTranslateService extends Service {
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
         Intent resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
         if (resultData == null) {
+            AppLog.warn(this, "SERVICE", "START_REJECTED", "reason=null_projection_data");
             toast("录屏授权数据无效，请重新启用");
             stopSelf();
             return START_NOT_STICKY;
         }
         beginProjection(resultCode, resultData);
         prepareOfflineModel();
+        AppLog.info(this, "SERVICE", "STARTED",
+                "realtime=" + realtimeEnabled + " interval_ms=" + realtimeIntervalMs
+                        + " online_refinement=" + onlineRefinementEnabled);
         return START_NOT_STICKY;
     }
 
@@ -158,7 +179,7 @@ public final class ScreenTranslateService extends Service {
         realtimeEnabled = prefs.getBoolean(MainActivity.KEY_REALTIME_ENABLED, true);
         onlineRefinementEnabled = prefs.getBoolean(MainActivity.KEY_ONLINE_REFINEMENT, false);
         realtimeIntervalMs = clamp(
-                prefs.getInt(MainActivity.KEY_REALTIME_INTERVAL_MS, 1200),
+                prefs.getInt(MainActivity.KEY_REALTIME_INTERVAL_MS, 600),
                 MainActivity.MIN_INTERVAL_MS,
                 MainActivity.MAX_INTERVAL_MS);
     }
@@ -174,6 +195,7 @@ public final class ScreenTranslateService extends Service {
                     if (destroyed) return;
                     preparingModel = false;
                     modelReady = true;
+                    AppLog.info(ScreenTranslateService.this, "MODEL", "READY", "offline=true");
                     setBubbleState(realtimeEnabled ? "实" : "译", Color.rgb(77, 225, 193));
                     toast("离线翻译模型已就绪");
                     if (realtimeEnabled) {
@@ -185,6 +207,7 @@ public final class ScreenTranslateService extends Service {
 
             @Override
             public void onFailure(Exception error) {
+                AppLog.error(ScreenTranslateService.this, "MODEL", "PREPARE_FAILED", "", error);
                 mainHandler.post(() -> {
                     if (destroyed) return;
                     preparingModel = false;
@@ -236,6 +259,8 @@ public final class ScreenTranslateService extends Service {
                 (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         mediaProjection = manager.getMediaProjection(resultCode, resultData);
         if (mediaProjection == null) {
+            AppLog.warn(this, "CAPTURE", "PROJECTION_CREATE_FAILED",
+                    "result_code=" + resultCode);
             toast("无法创建录屏会话");
             stopSelf();
             return;
@@ -251,14 +276,43 @@ public final class ScreenTranslateService extends Service {
                 imageReader.getSurface(),
                 null,
                 captureHandler);
+        AppLog.info(this, "CAPTURE", "PROJECTION_CREATED",
+                "width=" + captureWidth + " height=" + captureHeight
+                        + " density=" + captureDensity + " display=" + (virtualDisplay != null));
     }
 
     private ImageReader newImageReader() {
-        return ImageReader.newInstance(
+        ImageReader reader = ImageReader.newInstance(
                 captureWidth,
                 captureHeight,
                 PixelFormat.RGBA_8888,
-                3);
+                4);
+        reader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
+        AppLog.info(this, "CAPTURE", "IMAGE_READER_CREATED",
+                "width=" + captureWidth + " height=" + captureHeight
+                        + " format=RGBA_8888 max_images=4");
+        return reader;
+    }
+
+    private void onImageAvailable(ImageReader readyReader) {
+        if (destroyed || readyReader != imageReader) return;
+        if (!firstFrameObserved) {
+            firstFrameObserved = true;
+            AppLog.info(this, "CAPTURE", "FIRST_FRAME_AVAILABLE", "reader_callback=true");
+        }
+        if (awaitingFrame) {
+            captureHandler.removeCallbacks(frameRetry);
+            acquirePendingFrame();
+            return;
+        }
+        Image stale = null;
+        try {
+            stale = readyReader.acquireLatestImage();
+        } catch (IllegalStateException error) {
+            AppLog.error(this, "CAPTURE", "IDLE_FRAME_DRAIN_FAILED", "", error);
+        } finally {
+            if (stale != null) stale.close();
+        }
     }
 
     @Override
@@ -275,16 +329,25 @@ public final class ScreenTranslateService extends Service {
     private void resizeCaptureSurface(int width, int height) {
         if (virtualDisplay == null || width <= 0 || height <= 0) return;
         busy.set(false);
+        awaitingFrame = false;
+        captureHandler.removeCallbacks(frameRetry);
         hasFrameHash = false;
+        firstFrameObserved = false;
         removeTranslationOverlay();
         captureWidth = width;
         captureHeight = height;
         captureDensity = getResources().getConfiguration().densityDpi;
         virtualDisplay.setSurface(null);
-        if (imageReader != null) imageReader.close();
+        if (imageReader != null) {
+            imageReader.setOnImageAvailableListener(null, null);
+            imageReader.close();
+        }
         imageReader = newImageReader();
         virtualDisplay.resize(captureWidth, captureHeight, captureDensity);
         virtualDisplay.setSurface(imageReader.getSurface());
+        AppLog.info(this, "CAPTURE", "SURFACE_RESIZED",
+                "width=" + captureWidth + " height=" + captureHeight
+                        + " density=" + captureDensity);
         scheduleNextRealtime();
     }
 
@@ -319,8 +382,7 @@ public final class ScreenTranslateService extends Service {
                 dp(58),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_SECURE,
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         bubbleParams.gravity = Gravity.TOP | Gravity.START;
         updateCaptureSize();
@@ -401,8 +463,10 @@ public final class ScreenTranslateService extends Service {
         mainHandler.removeCallbacks(realtimeTick);
         setBubbleState("…", Color.rgb(255, 202, 92));
         hideOverlayForCapture();
+        AppLog.info(this, "CAPTURE", "REQUESTED",
+                "mode=local force=" + force + " user=" + userInitiated);
         captureHandler.postDelayed(
-                () -> acquireFrame(CaptureMode.LOCAL, force, 0), 55);
+                () -> beginFrameAcquire(CaptureMode.LOCAL, force), 55);
     }
 
     private void requestOnlineRefinement() {
@@ -417,48 +481,94 @@ public final class ScreenTranslateService extends Service {
         mainHandler.removeCallbacks(realtimeTick);
         setBubbleState("AI", Color.rgb(126, 173, 255));
         hideOverlayForCapture();
+        AppLog.info(this, "CAPTURE", "REQUESTED", "mode=online force=true user=true");
         captureHandler.postDelayed(
-                () -> acquireFrame(CaptureMode.ONLINE, true, 0), 55);
+                () -> beginFrameAcquire(CaptureMode.ONLINE, true), 55);
     }
 
     private void hideOverlayForCapture() {
         if (translationOverlay != null) translationOverlay.setVisibility(View.INVISIBLE);
+        if (bubbleView != null) bubbleView.setVisibility(View.INVISIBLE);
     }
 
     private void restoreOverlayAfterCapture() {
         mainHandler.post(() -> {
             if (translationOverlay != null) translationOverlay.setVisibility(View.VISIBLE);
+            if (bubbleView != null) bubbleView.setVisibility(View.VISIBLE);
         });
     }
 
-    private void acquireFrame(CaptureMode mode, boolean force, int attempt) {
+    private void beginFrameAcquire(CaptureMode mode, boolean force) {
+        pendingCaptureMode = mode;
+        pendingCaptureForce = force;
+        pendingCaptureAttempt = 0;
+        captureRequestStartedAt = SystemClock.elapsedRealtime();
+        awaitingFrame = true;
+        acquirePendingFrame();
+    }
+
+    private void acquirePendingFrame() {
+        if (!awaitingFrame) return;
         if (destroyed || imageReader == null) {
+            awaitingFrame = false;
             fail("截屏通道已关闭");
             return;
         }
-        Image image = imageReader.acquireLatestImage();
+        Image image;
+        try {
+            image = imageReader.acquireLatestImage();
+        } catch (IllegalStateException error) {
+            awaitingFrame = false;
+            restoreOverlayAfterCapture();
+            AppLog.error(this, "CAPTURE", "ACQUIRE_FAILED", "", error);
+            fail("读取屏幕画面失败：" + safeMessage(error));
+            return;
+        }
         if (image == null) {
-            if (attempt < MAX_CAPTURE_RETRIES) {
-                captureHandler.postDelayed(
-                        () -> acquireFrame(mode, force, attempt + 1), 60);
+            pendingCaptureAttempt++;
+            if (pendingCaptureAttempt <= MAX_CAPTURE_RETRIES) {
+                if (pendingCaptureAttempt == 1 || pendingCaptureAttempt % 10 == 0) {
+                    AppLog.warn(this, "CAPTURE", "WAITING_FOR_FRAME",
+                            "attempt=" + pendingCaptureAttempt + " max=" + MAX_CAPTURE_RETRIES);
+                }
+                captureHandler.postDelayed(frameRetry, CAPTURE_RETRY_MS);
             } else {
+                awaitingFrame = false;
                 restoreOverlayAfterCapture();
+                AppLog.warn(this, "CAPTURE", "FRAME_TIMEOUT",
+                        "wait_ms=" + (SystemClock.elapsedRealtime() - captureRequestStartedAt)
+                                + " first_frame_seen=" + firstFrameObserved
+                                + " reader=" + (imageReader != null)
+                                + " display=" + (virtualDisplay != null));
                 fail("暂时没有取得屏幕画面");
             }
             return;
         }
 
+        awaitingFrame = false;
+        captureHandler.removeCallbacks(frameRetry);
+        CaptureMode mode = pendingCaptureMode;
+        boolean force = pendingCaptureForce;
+
         Bitmap bitmap;
         try {
             bitmap = imageToBitmap(image);
         } catch (Exception error) {
+            int failedWidth = image.getWidth();
+            int failedHeight = image.getHeight();
             image.close();
             restoreOverlayAfterCapture();
+            AppLog.error(this, "CAPTURE", "FRAME_CONVERSION_FAILED",
+                    "image_width=" + failedWidth + " image_height=" + failedHeight, error);
             fail("处理截图失败：" + safeMessage(error));
             return;
         }
         image.close();
         restoreOverlayAfterCapture();
+        AppLog.info(this, "CAPTURE", "FRAME_ACQUIRED",
+                "wait_ms=" + (SystemClock.elapsedRealtime() - captureRequestStartedAt)
+                        + " attempts=" + pendingCaptureAttempt
+                        + " width=" + bitmap.getWidth() + " height=" + bitmap.getHeight());
 
         if (mode == CaptureMode.ONLINE) {
             encodeAndSendOnline(bitmap);
@@ -469,6 +579,7 @@ public final class ScreenTranslateService extends Service {
         if (!force && hasFrameHash
                 && FrameFingerprint.distance(lastFrameHash, fingerprint) <= UNCHANGED_HASH_DISTANCE) {
             bitmap.recycle();
+            AppLog.info(this, "CAPTURE", "UNCHANGED_SKIPPED", "hash_distance=0");
             mainHandler.post(this::finishWithoutVisualChange);
             return;
         }
@@ -498,11 +609,17 @@ public final class ScreenTranslateService extends Service {
         Image.Plane plane = image.getPlanes()[0];
         int pixelStride = plane.getPixelStride();
         int rowStride = plane.getRowStride();
-        int rowPadding = rowStride - pixelStride * captureWidth;
-        int paddedWidth = captureWidth + rowPadding / pixelStride;
-        Bitmap padded = Bitmap.createBitmap(paddedWidth, captureHeight, Bitmap.Config.ARGB_8888);
+        int width = image.getWidth();
+        int height = image.getHeight();
+        if (pixelStride <= 0 || rowStride < pixelStride * width) {
+            throw new IllegalStateException("无效的屏幕帧步幅");
+        }
+        int rowPadding = rowStride - pixelStride * width;
+        int paddedWidth = width + rowPadding / pixelStride;
+        plane.getBuffer().rewind();
+        Bitmap padded = Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888);
         padded.copyPixelsFromBuffer(plane.getBuffer());
-        Bitmap cropped = Bitmap.createBitmap(padded, 0, 0, captureWidth, captureHeight);
+        Bitmap cropped = Bitmap.createBitmap(padded, 0, 0, width, height);
         if (cropped != padded) padded.recycle();
         return cropped;
     }
@@ -602,8 +719,7 @@ public final class ScreenTranslateService extends Service {
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                             | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                             | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                            | WindowManager.LayoutParams.FLAG_SECURE,
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT);
             params.gravity = Gravity.TOP | Gravity.START;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -615,6 +731,8 @@ public final class ScreenTranslateService extends Service {
         }
         translationOverlay.setVisibility(View.VISIBLE);
         translationOverlay.setTranslations(translations, attribution);
+        AppLog.info(this, "OVERLAY", "UPDATED",
+                "translations=" + translations.size() + " attribution=" + attribution);
     }
 
     private void bringBubbleToFront() {
@@ -658,15 +776,18 @@ public final class ScreenTranslateService extends Service {
     }
 
     private void setBubbleState(String label, int color) {
-        mainHandler.post(() -> {
+        Runnable update = () -> {
             if (destroyed || bubbleView == null) return;
             bubbleView.setVisibility(View.VISIBLE);
             bubbleView.setText(label);
             bubbleView.setBackground(circle(color, Color.WHITE));
-        });
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) update.run();
+        else mainHandler.post(update);
     }
 
     private void fail(String message) {
+        AppLog.warn(this, "SERVICE", "REQUEST_FAILED", "message=" + message);
         mainHandler.post(() -> {
             if (destroyed) return;
             busy.set(false);
@@ -725,11 +846,14 @@ public final class ScreenTranslateService extends Service {
     }
 
     private void releaseProjection() {
+        awaitingFrame = false;
+        if (captureHandler != null) captureHandler.removeCallbacks(frameRetry);
         if (virtualDisplay != null) {
             virtualDisplay.release();
             virtualDisplay = null;
         }
         if (imageReader != null) {
+            imageReader.setOnImageAvailableListener(null, null);
             imageReader.close();
             imageReader = null;
         }
@@ -745,8 +869,12 @@ public final class ScreenTranslateService extends Service {
 
     @Override
     public void onDestroy() {
+        AppLog.info(this, "SERVICE", "DESTROYING",
+                "busy=" + busy.get() + " model_ready=" + modelReady);
         destroyed = true;
         busy.set(false);
+        awaitingFrame = false;
+        if (captureHandler != null) captureHandler.removeCallbacks(frameRetry);
         mainHandler.removeCallbacksAndMessages(null);
         removeTranslationOverlay();
         if (bubbleView != null) {
