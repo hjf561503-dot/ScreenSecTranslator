@@ -6,6 +6,10 @@ const sourceUrl = new URL(
   "../app/src/main/java/com/yyh/screensectranslator/ScreenTranslateService.java",
   import.meta.url
 );
+const logSourceUrl = new URL(
+  "../app/src/main/java/com/yyh/screensectranslator/AppLog.java",
+  import.meta.url
+);
 
 test("capture resize callback ignores unchanged dimensions before rebuilding", async () => {
   const source = await readFile(sourceUrl, "utf8");
@@ -29,4 +33,10 @@ test("capture never hides the bubble or enables FLAG_SECURE", async () => {
   const hideMethod = source.slice(hideStart, hideEnd);
   assert.doesNotMatch(hideMethod, /bubbleView\.setVisibility/);
   assert.doesNotMatch(source, /WindowManager\.LayoutParams\.FLAG_SECURE/);
+});
+
+test("log version comes from the installed package without generated BuildConfig", async () => {
+  const source = await readFile(logSourceUrl, "utf8");
+  assert.match(source, /getPackageInfo\(context\.getPackageName\(\), 0\)\.versionName/);
+  assert.doesNotMatch(source, /BuildConfig/);
 });
