@@ -8,6 +8,7 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.RenderEffect;
+import android.graphics.RenderNode;
 import android.graphics.Shader;
 import android.os.Build;
 import android.text.Layout;
@@ -73,17 +74,27 @@ final class TranslationOverlayView extends View {
     private void drawBlurMask(Canvas canvas, Bitmap frame, Rect source, RectF mask, int dominant) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             float radius = Math.max(dp(3), Math.min(mask.width(), mask.height()) * 0.16f);
-            blurPaint.setRenderEffect(RenderEffect.createBlurEffect(
+            int nodeWidth = Math.max(1, Math.round(mask.width()));
+            int nodeHeight = Math.max(1, Math.round(mask.height()));
+            RenderNode blurNode = new RenderNode("translation-mask-blur");
+            blurNode.setPosition(0, 0, nodeWidth, nodeHeight);
+            Canvas recording = blurNode.beginRecording(nodeWidth, nodeHeight);
+            recording.drawBitmap(frame, source,
+                    new RectF(0f, 0f, nodeWidth, nodeHeight), blurPaint);
+            blurNode.endRecording();
+            blurNode.setRenderEffect(RenderEffect.createBlurEffect(
                     radius, radius, Shader.TileMode.CLAMP));
+            canvas.save();
+            canvas.clipRect(mask);
+            canvas.translate(mask.left, mask.top);
+            canvas.drawRenderNode(blurNode);
+            canvas.restore();
+        } else {
+            canvas.drawBitmap(frame, source, mask, blurPaint);
         }
-        canvas.save();
-        canvas.clipRect(mask);
-        canvas.drawBitmap(frame, source, mask, blurPaint);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) blurPaint.setRenderEffect(null);
         tintPaint.setColor(Color.argb(96, Color.red(dominant),
                 Color.green(dominant), Color.blue(dominant)));
         canvas.drawRect(mask, tintPaint);
-        canvas.restore();
     }
 
     private void drawFittedTranslation(Canvas canvas, String translated, RectF original,
