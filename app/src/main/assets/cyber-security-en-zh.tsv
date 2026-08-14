@@ -1,0 +1,181 @@
+# ScreenSecTranslator freely redistributable cybersecurity terminology
+# version=2026.08.13.2
+# Format: English<TAB>Simplified Chinese; @KEEP means preserve the product/tool name.
+dirb	@KEEP
+dirbuster	@KEEP
+gobuster	@KEEP
+feroxbuster	@KEEP
+ffuf	@KEEP
+wfuzz	@KEEP
+nikto	@KEEP
+nmap	@KEEP
+masscan	@KEEP
+rustscan	@KEEP
+sqlmap	@KEEP
+metasploit	@KEEP
+msfconsole	@KEEP
+burp suite	@KEEP
+owasp zap	@KEEP
+wireshark	@KEEP
+tcpdump	@KEEP
+netcat	@KEEP
+hydra	@KEEP
+hashcat	@KEEP
+john the ripper	@KEEP
+aircrack-ng	@KEEP
+responder	@KEEP
+bloodhound	@KEEP
+mimikatz	@KEEP
+crackmapexec	@KEEP
+impacket	@KEEP
+enum4linux	@KEEP
+linpeas	@KEEP
+winpeas	@KEEP
+seclists	@KEEP
+nuclei	@KEEP
+subfinder	@KEEP
+amass	@KEEP
+theharvester	@KEEP
+wpscan	@KEEP
+openvas	@KEEP
+nessus	@KEEP
+volatility	@KEEP
+apktool	@KEEP
+binwalk	@KEEP
+tryhackme	@KEEP
+hack the box	@KEEP
+command prompt	命令提示符
+terminal	终端
+security analyst dashboard	安全分析师仪表盘
+security analyst	安全分析师
+soc operator	SOC 操作员
+admin user	管理员用户
+enumeration attempt	枚举尝试
+customer database	客户数据库
+investigating	调查中
+unassigned	未分配
+assigned to	分配给
+source	来源
+minutes ago	分钟前
+sql injection attack	SQL 注入攻击
+automated sql injection detected on payment form	检测到针对支付表单的自动化 SQL 注入攻击
+event tracking	事件跟踪
+resolved	已解决
+open	打开
+downloaded	已下载
+found	已发现
+scanning url	正在扫描 URL
+hidden page	隐藏页面
+hidden pages	隐藏页面
+hidden page finder	隐藏页面发现工具
+web content discovery	Web 内容发现
+directory discovery	目录发现
+directory brute forcing	目录暴力枚举
+directory enumeration	目录枚举
+website directory	网站目录
+wordlist	字典文件
+word list	字典文件
+attack surface	攻击面
+attack vector	攻击向量
+initial access	初始访问
+execution	执行
+persistence	持久化
+privilege escalation	权限提升
+defense evasion	防御规避
+credential access	凭据访问
+credential dumping	凭据转储
+discovery	发现
+lateral movement	横向移动
+collection	收集
+command and control	命令与控制（C2）
+exfiltration	数据外传
+impact	影响
+indicator of compromise	失陷指标（IOC）
+endpoint detection and response	端点检测与响应（EDR）
+security information and event management	安全信息与事件管理（SIEM）
+multi-factor authentication	多因素身份验证（MFA）
+remote code execution	远程代码执行（RCE）
+proof of concept	概念验证（PoC）
+zero-day vulnerability	零日漏洞（0-day）
+exploit chain	漏洞利用链
+reverse shell	反向 Shell
+web shell	WebShell
+bind shell	绑定 Shell
+buffer overflow	缓冲区溢出
+use after free	释放后使用（UAF）
+race condition	竞态条件
+directory traversal	目录穿越
+path traversal	路径穿越
+arbitrary file read	任意文件读取
+arbitrary file write	任意文件写入
+cross-site scripting	跨站脚本攻击（XSS）
+sql injection	SQL 注入
+server-side request forgery	服务端请求伪造（SSRF）
+local file inclusion	本地文件包含（LFI）
+remote file inclusion	远程文件包含（RFI）
+denial of service	拒绝服务（DoS）
+man in the middle	中间人攻击（MITM）
+brute force	暴力破解
+supply chain attack	供应链攻击
+sandbox escape	沙箱逃逸
+container escape	容器逃逸
+authentication bypass	身份验证绕过
+authorization bypass	授权绕过
+access control	访问控制
+broken access control	访问控制失效
+session fixation	会话固定
+session hijacking	会话劫持
+password spraying	密码喷洒
+credential stuffing	凭据填充
+phishing	网络钓鱼
+spear phishing	鱼叉式网络钓鱼
+ransomware	勒索软件
+malware	恶意软件
+rootkit	Rootkit
+backdoor	后门
+payload	载荷
+shellcode	Shellcode
+vulnerability	漏洞
+exploit	漏洞利用
+patch	补丁
+remediation	修复措施
+mitigation	缓解措施
+false positive	误报
+false negative	漏报
+severity	严重性
+critical	严重
+informational	信息
+scan	扫描
+port scan	端口扫描
+vulnerability scan	漏洞扫描
+source code	源代码
+machine code	机器码
+operating system	操作系统
+virtual machine	虚拟机
+web application	Web 应用
+web server	Web 服务器
+domain controller	域控制器
+active directory	Active Directory
+security token	安全令牌
+access token	访问令牌
+refresh token	刷新令牌
+api key	API 密钥
+secret key	密钥
+private key	私钥
+public key	公钥
+hash value	哈希值
+encryption	加密
+decryption	解密
+obfuscation	混淆
+deobfuscation	去混淆
+packet capture	数据包捕获
+network traffic	网络流量
+firewall rule	防火墙规则
+security group	安全组
+endpoint protection	端点防护
+incident response	事件响应
+threat intelligence	威胁情报
+threat actor	威胁行为者
+security misconfiguration	安全配置错误
+data breach	数据泄露
+data loss prevention	数据防泄漏（DLP）

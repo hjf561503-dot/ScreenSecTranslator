@@ -1,0 +1,21 @@
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        # A brand-new repository may not have Dependency Graph enabled yet.
+        # Keep the rest of CI usable while GitHub reports that repository-level
+        # prerequisite; Dependabot and CodeQL continue to run independently.
+        continue-on-error: true
+        with:
+          fail-on-severity: moderate

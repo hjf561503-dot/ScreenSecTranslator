@@ -1,0 +1,37 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.yyh.screensectranslator'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.yyh.screensectranslator'
+        minSdk 26
+        targetSdk 35
+        versionCode 8
+        versionName '2.1.1'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Bundled Chinese + Latin OCR: available immediately, works offline, and lets
+    // the candidate builder exclude Han text before English is translated.
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+
+    // English -> Simplified Chinese model downloads once, then runs on device.
+    implementation 'com.google.mlkit:translate:17.0.3'
+}

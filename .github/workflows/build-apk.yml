@@ -1,0 +1,61 @@
+name: CI and Android APK
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proxy-tests:
+    name: Proxy tests and secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check for accidentally committed API keys
+        shell: bash
+        run: |
+          matches="$(git grep -I -n -E 'sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}' -- . ':(exclude)server/.env.example' || true)"
+          if [[ -n "$matches" ]]; then
+            echo "Potential API credential found in tracked files."
+            echo "$matches"
+            exit 1
+          fi
+      - name: Test optional online proxy
+        working-directory: server
+        run: npm test
+
+  build:
+    name: Build debug APK
+    needs: proxy-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build debug APK
+        run: gradle :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ScreenSecTranslator-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
