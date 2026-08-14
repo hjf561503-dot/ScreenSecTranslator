@@ -1,11 +1,18 @@
-# 屏译·安全术语版 2.1.0
+# 屏译·安全术语版 2.1.1
 
 [![CI and Android APK](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/build-apk.yml)
 [![CodeQL](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml/badge.svg)](https://github.com/hjf561503-dot/ScreenSecTranslator/actions/workflows/codeql.yml)
 
-面向网络安全学习场景的 Android 悬浮屏幕翻译工具。2.1.0 已删除后台实时扫描：短按悬浮球只在本机截取一帧，并在这张画面内分批处理到整页英文全部完成；连续按住满 3 秒才尝试调用用户配置的云端代理。
+面向网络安全学习场景的 Android 悬浮屏幕翻译工具。2.1.x 已删除后台实时扫描：短按悬浮球只在本机截取一帧，并在这张画面内分批处理到整页英文全部完成；连续按住满 3 秒才尝试调用用户配置的云端代理。
 
-## 2.1.0 交互与覆盖规则
+## 2.1.1 可靠性改进
+
+- “模型已下载”与“模型运行正常”分开判断。启动前会实际执行一次本地英译中预热，只有返回中文才显示运行验证通过。
+- 服务自己的翻译器也会在悬浮球进入“译”状态前完成预热，减少第一次短按才初始化模型造成的等待或误报。
+- 中英混排元素按字符框隔离英文时，会根据相邻框的实际间距恢复单词空格，不再把 `Security Analyst` 拼成 `SecurityAnalyst`。
+- 相同英文、位置高度重叠的 OCR 候选会保留更紧的文字框并去重，避免同一内容被重复覆盖。
+
+## 2.1.x 交互与覆盖规则
 
 - 不存在定时器、自动刷新或“页面不动再扫一次”的后台循环。
 - 短按：本机 OCR + ML Kit 英译中 + 网络安全术语修正。一次点击会连续处理所有批次，不需要重复点击。
@@ -19,6 +26,12 @@
 - 每个框从截图区域计算主色，优先使用 RGB 反色；对比度不足 4.5:1 时自动切换黑色或白色。
 
 机器翻译无法在所有开放文本上作出数学意义的 100% 正确保证。本项目通过安全术语表、逐元素语言隔离、保护标识符、输出质量校验和标点恢复来阻止已知坏结果；无法通过校验的结果不会覆盖原文。
+
+## Bubble Translate 4.2.8 参考审查
+
+对用户提供的 APK 做了只读静态分析。它的 `AITranslation` 实际是 ML Kit 本地机器翻译；未发现 OpenAI、Gemini、Claude 等大模型接入或可证明属于朋友付费账户的 API 密钥。Google 翻译与 DeepL 部分依赖网页接口，微软部分使用 Edge 公开取令牌地址，均不作为本项目的付费 AI 额度接入。
+
+本项目只独立实现了其中合理的工程思想，没有复制其反编译源码、广告、计费、追踪或非官方网页接口。完整结论见 [`docs/bubble-translate-4.2.8-static-audit.md`](docs/bubble-translate-4.2.8-static-audit.md)。
 
 ## 工作流程
 

@@ -52,6 +52,7 @@ final class OfflineTranslationEngine implements AutoCloseable {
     }
 
     private static final int LINES_PER_PASS = 12;
+    private static final String WARM_UP_TEXT = "Network security.";
     // Keep the Samsung Tab S9+ native 2800 px screenshot intact. Scaling it to
     // 1800 px made small dashboard labels fall below ML Kit's useful character size.
     private static final int MAX_OCR_LONG_EDGE = 3200;
@@ -88,19 +89,38 @@ final class OfflineTranslationEngine implements AutoCloseable {
         OfflineModelState.isDownloaded()
                 .addOnSuccessListener(downloaded -> {
                     if (Boolean.TRUE.equals(downloaded)) {
-                        modelReady = true;
-                        callback.onReady();
+                        warmUpTranslator(callback);
                         return;
                     }
                     OfflineModelState.download()
-                            .addOnSuccessListener(unused -> {
-                                modelReady = true;
-                                callback.onReady();
-                            })
+                            .addOnSuccessListener(unused -> warmUpTranslator(callback))
                             .addOnFailureListener(error ->
                                     callback.onFailure(asException(error)));
                 })
                 .addOnFailureListener(error -> callback.onFailure(asException(error)));
+    }
+
+    private void warmUpTranslator(PrepareCallback callback) {
+        long startedAt = SystemClock.elapsedRealtime();
+        AppLog.info(context, "MODEL", "RUNTIME_WARMUP_STARTED", "offline=true");
+        translator.translate(WARM_UP_TEXT)
+                .addOnSuccessListener(output -> {
+                    if (output == null || output.trim().isEmpty()
+                            || !CyberGlossary.containsHan(output)) {
+                        callback.onFailure(new IllegalStateException(
+                                "离线模型预热未返回中文"));
+                        return;
+                    }
+                    modelReady = true;
+                    AppLog.info(context, "MODEL", "RUNTIME_WARMUP_COMPLETED",
+                            "duration_ms=" + (SystemClock.elapsedRealtime() - startedAt));
+                    callback.onReady();
+                })
+                .addOnFailureListener(error -> {
+                    AppLog.error(context, "MODEL", "RUNTIME_WARMUP_FAILED",
+                            "duration_ms=" + (SystemClock.elapsedRealtime() - startedAt), error);
+                    callback.onFailure(asException(error));
+                });
     }
 
     synchronized void clearPage() {
@@ -156,18 +176,65 @@ final class OfflineTranslationEngine implements AutoCloseable {
 
     private PageSession createSession(Text recognized, int imageWidth, int imageHeight,
                                       long startedAt, long ocrFinishedAt) {
-        List<Candidate> candidates = new ArrayList<>();
+        List<Candidate> rawCandidates = new ArrayList<>();
         for (Text.TextBlock block : recognized.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
-                addLineCandidates(line, candidates);
+                addLineCandidates(line, rawCandidates);
             }
         }
+        List<Candidate> candidates = deduplicateCandidates(rawCandidates);
         candidates.sort(Comparator
                 .comparingInt((Candidate item) -> item.box.top)
                 .thenComparingInt(item -> item.box.left));
         AppLog.info(context, "TRANSLATE", "PAGE_CANDIDATES_READY",
-                "candidates=" + candidates.size() + " lines_per_pass=" + LINES_PER_PASS);
+                "raw_candidates=" + rawCandidates.size()
+                        + " candidates=" + candidates.size()
+                        + " duplicates_removed=" + (rawCandidates.size() - candidates.size())
+                        + " lines_per_pass=" + LINES_PER_PASS);
         return new PageSession(candidates, imageWidth, imageHeight, startedAt, ocrFinishedAt);
+    }
+
+    private static List<Candidate> deduplicateCandidates(List<Candidate> candidates) {
+        List<Candidate> unique = new ArrayList<>();
+        for (Candidate candidate : candidates) {
+            String candidateKey = normalizedSource(candidate.source);
+            int duplicateIndex = -1;
+            for (int i = 0; i < unique.size(); i++) {
+                Candidate existing = unique.get(i);
+                if (candidateKey.equals(normalizedSource(existing.source))
+                        && overlapOverSmaller(candidate.box, existing.box) >= 0.68f) {
+                    duplicateIndex = i;
+                    break;
+                }
+            }
+            if (duplicateIndex < 0) {
+                unique.add(candidate);
+                continue;
+            }
+            Candidate existing = unique.get(duplicateIndex);
+            if (area(candidate.box) < area(existing.box)) {
+                unique.set(duplicateIndex, candidate);
+            }
+        }
+        return unique;
+    }
+
+    private static String normalizedSource(String value) {
+        return clean(value).toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static float overlapOverSmaller(Rect first, Rect second) {
+        int left = Math.max(first.left, second.left);
+        int top = Math.max(first.top, second.top);
+        int right = Math.min(first.right, second.right);
+        int bottom = Math.min(first.bottom, second.bottom);
+        if (right <= left || bottom <= top) return 0f;
+        long intersection = (long) (right - left) * (bottom - top);
+        return intersection / (float) Math.max(1L, Math.min(area(first), area(second)));
+    }
+
+    private static long area(Rect box) {
+        return (long) Math.max(0, box.width()) * Math.max(0, box.height());
     }
 
     private static void addLineCandidates(Text.Line line, List<Candidate> candidates) {
@@ -387,6 +454,8 @@ final class OfflineTranslationEngine implements AutoCloseable {
     private static final class RunBuilder {
         private final StringBuilder text = new StringBuilder();
         private Rect bounds;
+        private Rect previousBox;
+        private float previousGlyphWidth;
 
         void append(String value, Rect box) {
             append(value, box, true);
@@ -398,13 +467,22 @@ final class OfflineTranslationEngine implements AutoCloseable {
 
         private void append(String value, Rect box, boolean inferWordSpace) {
             if (value == null || value.isEmpty()) return;
-            if (inferWordSpace && text.length() > 0
+            float glyphWidth = box.width()
+                    / (float) Math.max(1, value.codePointCount(0, value.length()));
+            boolean visualWordGap = !inferWordSpace && previousBox != null
+                    && box.left > previousBox.right
+                    && box.left - previousBox.right
+                    > Math.max(1f, Math.min(previousGlyphWidth, glyphWidth) * 0.45f);
+            if (text.length() > 0
+                    && (inferWordSpace || visualWordGap)
                     && needsSpace(text.charAt(text.length() - 1), value.charAt(0))) {
                 text.append(' ');
             }
             text.append(value);
             if (bounds == null) bounds = new Rect(box);
             else bounds.union(box);
+            previousBox = new Rect(box);
+            previousGlyphWidth = Math.max(1f, glyphWidth);
         }
 
         boolean isEmpty() {
@@ -422,6 +500,8 @@ final class OfflineTranslationEngine implements AutoCloseable {
         void clear() {
             text.setLength(0);
             bounds = null;
+            previousBox = null;
+            previousGlyphWidth = 0f;
         }
 
         private static boolean needsSpace(char left, char right) {

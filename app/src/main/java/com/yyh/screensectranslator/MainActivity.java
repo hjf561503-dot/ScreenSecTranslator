@@ -93,7 +93,7 @@ public final class MainActivity extends Activity {
         eyebrow.setLetterSpacing(0.12f);
         root.addView(eyebrow);
 
-        TextView title = text("屏译·安全术语版 2.1.0", 30, Color.WHITE);
+        TextView title = text("屏译·安全术语版 2.1.1", 30, Color.WHITE);
         title.setPadding(0, dp(8), 0, dp(8));
         root.addView(title);
 
@@ -231,8 +231,12 @@ public final class MainActivity extends Activity {
                 .addOnSuccessListener(downloaded -> {
                     modelOperationInProgress = false;
                     if (Boolean.TRUE.equals(downloaded)) {
-                        showModelReady();
-                        continueStartFlow();
+                        if (OfflineModelState.isRuntimeVerified()) {
+                            showModelReady();
+                            continueStartFlow();
+                        } else {
+                            beginModelVerification();
+                        }
                     } else {
                         beginModelDownload();
                     }
@@ -264,8 +268,14 @@ public final class MainActivity extends Activity {
                 .addOnSuccessListener(downloaded -> {
                     modelOperationInProgress = false;
                     if (Boolean.TRUE.equals(downloaded)) {
-                        showModelReady();
-                        if (startAfterModelReady) continueStartFlow();
+                        if (OfflineModelState.isRuntimeVerified()) {
+                            showModelReady();
+                            if (startAfterModelReady) continueStartFlow();
+                        } else if (startAfterModelReady) {
+                            beginModelVerification();
+                        } else {
+                            showModelDownloaded();
+                        }
                     } else if (startAfterModelReady) {
                         beginModelDownload();
                     } else {
@@ -299,10 +309,7 @@ public final class MainActivity extends Activity {
                                 return;
                             }
                             AppLog.info(this, "MODEL", "DOWNLOAD_VERIFIED", "downloaded=true");
-                            showModelReady();
-                            statusText.setText("离线模型已下载并验证，可以启动按需翻译");
-                            statusText.setTextColor(Color.rgb(77, 225, 193));
-                            if (startAfterModelReady) continueStartFlow();
+                            beginModelVerification();
                         })
                         .addOnFailureListener(error -> {
                             modelOperationInProgress = false;
@@ -317,6 +324,34 @@ public final class MainActivity extends Activity {
                 });
     }
 
+    private void beginModelVerification() {
+        if (modelOperationInProgress) return;
+        modelOperationInProgress = true;
+        modelButton.setEnabled(false);
+        modelButton.setText("正在预热并验证离线模型…");
+        modelStatusText.setText("模型状态：文件已下载，正在完成一次本地运行验证");
+        modelStatusText.setTextColor(Color.rgb(255, 206, 107));
+        statusText.setText("正在预热离线中英模型；完成前不会申请录屏权限");
+        statusText.setTextColor(Color.rgb(255, 206, 107));
+        AppLog.info(this, "MODEL", "ACTIVITY_RUNTIME_VERIFY_STARTED", "offline=true");
+        OfflineModelState.verifyReady()
+                .addOnSuccessListener(unused -> {
+                    modelOperationInProgress = false;
+                    AppLog.info(this, "MODEL", "ACTIVITY_RUNTIME_VERIFY_COMPLETED",
+                            "offline=true");
+                    showModelReady();
+                    statusText.setText("离线模型已下载、预热并验证，可以启动按需翻译");
+                    statusText.setTextColor(Color.rgb(77, 225, 193));
+                    if (startAfterModelReady) continueStartFlow();
+                })
+                .addOnFailureListener(error -> {
+                    modelOperationInProgress = false;
+                    startAfterModelReady = false;
+                    AppLog.error(this, "MODEL", "ACTIVITY_RUNTIME_VERIFY_FAILED", "", error);
+                    showModelFailure("模型运行验证失败：" + compact(error.getMessage()));
+                });
+    }
+
     private void setModelCheckingUi() {
         modelButton.setEnabled(false);
         modelButton.setText("正在检查离线模型…");
@@ -326,9 +361,16 @@ public final class MainActivity extends Activity {
 
     private void showModelReady() {
         modelButton.setEnabled(false);
-        modelButton.setText("离线模型已下载并验证（无需重复下载）");
-        modelStatusText.setText("模型状态：已就绪；启动时不会再次下载");
+        modelButton.setText("离线模型已下载、预热并验证");
+        modelStatusText.setText("模型状态：运行验证通过；启动时不会再次下载");
         modelStatusText.setTextColor(Color.rgb(77, 225, 193));
+    }
+
+    private void showModelDownloaded() {
+        modelButton.setEnabled(false);
+        modelButton.setText("离线模型已下载（启动前自动预热）");
+        modelStatusText.setText("模型状态：文件已下载；启动时会先做一次本地运行验证");
+        modelStatusText.setTextColor(Color.rgb(114, 197, 255));
     }
 
     private void showModelMissing() {
@@ -529,7 +571,7 @@ public final class MainActivity extends Activity {
                 connection.setReadTimeout(15_000);
                 connection.setRequestMethod("GET");
                 connection.setRequestProperty("Accept", "text/plain");
-                connection.setRequestProperty("User-Agent", "ScreenSecTranslator/2.1.0");
+                connection.setRequestProperty("User-Agent", "ScreenSecTranslator/2.1.1");
                 int status = connection.getResponseCode();
                 InputStream stream = status >= 200 && status < 300
                         ? connection.getInputStream() : connection.getErrorStream();

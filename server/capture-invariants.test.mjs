@@ -18,6 +18,10 @@ const engineSourceUrl = new URL(
   "../app/src/main/java/com/yyh/screensectranslator/OfflineTranslationEngine.java",
   import.meta.url
 );
+const modelStateSourceUrl = new URL(
+  "../app/src/main/java/com/yyh/screensectranslator/OfflineModelState.java",
+  import.meta.url
+);
 const glossarySourceUrl = new URL(
   "../app/src/main/java/com/yyh/screensectranslator/CyberGlossary.java",
   import.meta.url
@@ -82,11 +86,34 @@ test("log version comes from the installed package without generated BuildConfig
 test("startup checks the real ML Kit model state before requesting capture", async () => {
   const activity = await readFile(activitySourceUrl, "utf8");
   const engine = await readFile(engineSourceUrl, "utf8");
+  const modelState = await readFile(modelStateSourceUrl, "utf8");
   assert.match(activity, /OfflineModelState\.isDownloaded\(\)/);
-  assert.match(activity, /离线模型.*验证/);
+  assert.match(activity, /beginModelVerification\(\)/);
+  assert.match(activity, /OfflineModelState\.verifyReady\(\)/);
+  assert.match(modelState, /verifier\.translate\(WARM_UP_TEXT\)/);
+  assert.match(modelState, /CyberGlossary\.containsHan\(output\)/);
   assert.doesNotMatch(activity, /已启动：模型就绪后/);
   assert.match(engine, /OfflineModelState\.isDownloaded\(\)/);
+  assert.match(engine, /warmUpTranslator\(callback\)/);
+  assert.match(engine, /RUNTIME_WARMUP_COMPLETED/);
   assert.doesNotMatch(engine, /downloadModelIfNeeded/);
+});
+
+test("mixed-script symbol extraction restores visual word gaps", async () => {
+  const engine = await readFile(engineSourceUrl, "utf8");
+  assert.match(engine, /visualWordGap/);
+  assert.match(engine, /box\.left - previousBox\.right/);
+  assert.match(engine, /Math\.min\(previousGlyphWidth, glyphWidth\) \* 0\.45f/);
+  assert.match(engine, /needsSpace\(text\.charAt\(text\.length\(\) - 1\), value\.charAt\(0\)\)/);
+  assert.match(engine, /previousBox = new Rect\(box\)/);
+});
+
+test("overlapping duplicate OCR candidates are removed without global text dedupe", async () => {
+  const engine = await readFile(engineSourceUrl, "utf8");
+  assert.match(engine, /deduplicateCandidates\(rawCandidates\)/);
+  assert.match(engine, /overlapOverSmaller\(candidate\.box, existing\.box\) >= 0\.68f/);
+  assert.match(engine, /candidateKey\.equals\(normalizedSource\(existing\.source\)\)/);
+  assert.match(engine, /duplicates_removed=/);
 });
 
 test("free terminology protects security tools and CamelCase product names", async () => {
